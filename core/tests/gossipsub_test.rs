@@ -115,5 +115,8 @@ async fn two_nodes_gossipsub_message() {
         }
     }
 
-    assert!(received, "Node B should have received the GossipSub message from Node A");
+    assert!(
+        received,
+        "Node B should have received the GossipSub message from Node A"
+    );
 }

@@ -95,8 +95,7 @@ fn main() -> Result<()> {
             let peer_id = keypair.public().to_peer_id();
             info!("Node PeerId: {}", peer_id);
 
-            let tcp_addr: Multiaddr =
-                format!("/ip4/{}/tcp/{}", listen_addr, tcp_port).parse()?;
+            let tcp_addr: Multiaddr = format!("/ip4/{}/tcp/{}", listen_addr, tcp_port).parse()?;
             let quic_addr: Multiaddr =
                 format!("/ip4/{}/udp/{}/quic-v1", listen_addr, quic_port).parse()?;
 

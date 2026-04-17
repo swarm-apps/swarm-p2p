@@ -64,7 +64,7 @@ impl BootstrapBehaviour {
         // 放大限制以支持大文件传输（理想情况下 DCUtR 打洞成功后会走直连，
         // relay 只在打洞失败时作为兜底）。
         let relay_config = relay::Config {
-            max_circuit_bytes: 1024 * 1024 * 512, // 512 MB
+            max_circuit_bytes: 1024 * 1024 * 512,            // 512 MB
             max_circuit_duration: Duration::from_secs(3600), // 1 小时
             ..Default::default()
         };

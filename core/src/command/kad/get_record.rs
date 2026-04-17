@@ -40,7 +40,11 @@ impl GetRecordCommand {
 impl<Req: CborMessage, Resp: CborMessage> CommandHandler<Req, Resp> for GetRecordCommand {
     type Result = GetRecordResult;
 
-    async fn run(&mut self, swarm: &mut CoreSwarm<Req, Resp>, _handle: &ResultHandle<Self::Result>) {
+    async fn run(
+        &mut self,
+        swarm: &mut CoreSwarm<Req, Resp>,
+        _handle: &ResultHandle<Self::Result>,
+    ) {
         let query_id = swarm.behaviour_mut().kad.get_record(self.key.clone());
         self.query_id = Some(query_id);
     }
@@ -67,10 +71,11 @@ impl<Req: CborMessage, Resp: CborMessage> CommandHandler<Req, Resp> for GetRecor
                     Ok(ok) => {
                         // 保存找到的记录（取第一个）
                         if self.record.is_none()
-                            && let kad::GetRecordOk::FoundRecord(peer_record) = ok {
-                                self.record = Some(peer_record.record);
-                                info!("GetRecord: found record");
-                            }
+                            && let kad::GetRecordOk::FoundRecord(peer_record) = ok
+                        {
+                            self.record = Some(peer_record.record);
+                            info!("GetRecord: found record");
+                        }
                     }
                     Err(e) => {
                         // 如果已经找到记录，忽略后续错误
@@ -101,9 +106,7 @@ impl<Req: CborMessage, Resp: CborMessage> CommandHandler<Req, Resp> for GetRecor
                         }));
                     }
                     None => {
-                        handle.finish(Err(Error::Kad(
-                            "Record not found".to_string(),
-                        )));
+                        handle.finish(Err(Error::Kad("Record not found".to_string())));
                     }
                 }
 

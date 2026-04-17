@@ -51,7 +51,9 @@ impl<Req: CborMessage, Resp: CborMessage> CommandHandler<Req, Resp> for Bootstra
             }
             Err(e) => {
                 error!("Bootstrap failed to start: {:?}", e);
-                handle.finish(Err(Error::Kad("Bootstrap failed: no known peers".to_string())));
+                handle.finish(Err(Error::Kad(
+                    "Bootstrap failed: no known peers".to_string(),
+                )));
             }
         }
     }
@@ -86,10 +88,7 @@ impl<Req: CborMessage, Resp: CborMessage> CommandHandler<Req, Resp> for Bootstra
                     }
                     Err(e) => {
                         error!("Bootstrap error: {:?}", e);
-                        handle.finish(Err(Error::Kad(format!(
-                            "Bootstrap: {:?}",
-                            e
-                        ))));
+                        handle.finish(Err(Error::Kad(format!("Bootstrap: {:?}", e))));
                         return (false, None); // 消费，完成
                     }
                 }

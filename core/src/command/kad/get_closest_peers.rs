@@ -1,7 +1,7 @@
 use async_trait::async_trait;
+use libp2p::PeerId;
 use libp2p::kad::{self, RecordKey};
 use libp2p::swarm::SwarmEvent;
-use libp2p::PeerId;
 use tracing::{error, info};
 
 use crate::error::Error;
@@ -41,7 +41,11 @@ impl GetClosestPeersCommand {
 impl<Req: CborMessage, Resp: CborMessage> CommandHandler<Req, Resp> for GetClosestPeersCommand {
     type Result = GetClosestPeersResult;
 
-    async fn run(&mut self, swarm: &mut CoreSwarm<Req, Resp>, _handle: &ResultHandle<Self::Result>) {
+    async fn run(
+        &mut self,
+        swarm: &mut CoreSwarm<Req, Resp>,
+        _handle: &ResultHandle<Self::Result>,
+    ) {
         let query_id = swarm
             .behaviour_mut()
             .kad

@@ -3,7 +3,7 @@ pub mod util;
 
 use anyhow::Result;
 use futures::StreamExt;
-use libp2p::{identity::Keypair, noise, swarm::SwarmEvent, tcp, yamux, Multiaddr, SwarmBuilder};
+use libp2p::{Multiaddr, SwarmBuilder, identity::Keypair, noise, swarm::SwarmEvent, tcp, yamux};
 use std::time::Duration;
 use tracing::{debug, info};
 
@@ -23,7 +23,11 @@ pub async fn run(
     // 闭包签名为 |key| 而非 |key, relay_client|
     let mut swarm = SwarmBuilder::with_existing_identity(keypair)
         .with_tokio()
-        .with_tcp(tcp::Config::default(), noise::Config::new, yamux::Config::default)?
+        .with_tcp(
+            tcp::Config::default(),
+            noise::Config::new,
+            yamux::Config::default,
+        )?
         .with_quic()
         .with_dns()?
         .with_behaviour(behaviour::BootstrapBehaviour::new)?

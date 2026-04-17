@@ -200,8 +200,7 @@ where
                         {
                             addr.clone()
                         } else {
-                            addr.clone()
-                                .with(libp2p::multiaddr::Protocol::P2p(peer_id))
+                            addr.clone().with(libp2p::multiaddr::Protocol::P2p(peer_id))
                         };
                         let relay_addr = base.with(libp2p::multiaddr::Protocol::P2pCircuit);
                         match self.swarm.listen_on(relay_addr.clone()) {
@@ -399,8 +398,7 @@ where
             })) => {
                 debug!(
                     "GossipSub message from {:?} on topic {}",
-                    message.source,
-                    message.topic
+                    message.source, message.topic
                 );
                 Some(NodeEvent::GossipMessage {
                     source: message.source,

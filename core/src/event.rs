@@ -105,17 +105,11 @@ pub enum NodeEvent<Req = ()> {
 
     /// 远端节点订阅了某个 GossipSub topic
     #[serde(rename_all = "camelCase")]
-    GossipSubscribed {
-        peer_id: PeerId,
-        topic: String,
-    },
+    GossipSubscribed { peer_id: PeerId, topic: String },
 
     /// 远端节点退订了某个 GossipSub topic
     #[serde(rename_all = "camelCase")]
-    GossipUnsubscribed {
-        peer_id: PeerId,
-        topic: String,
-    },
+    GossipUnsubscribed { peer_id: PeerId, topic: String },
 }
 
 /// 用于序列化 Vec<u8> 为 base64 字符串（serde JSON 兼容）

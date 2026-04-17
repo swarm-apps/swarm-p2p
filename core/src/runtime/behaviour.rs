@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::{
-    StreamProtocol, autonat, dcutr, gossipsub, identify, identity::Keypair, kad, mdns, ping,
-    relay, request_response, swarm::NetworkBehaviour,
+    StreamProtocol, autonat, dcutr, gossipsub, identify, identity::Keypair, kad, mdns, ping, relay,
+    request_response, swarm::NetworkBehaviour,
 };
 use serde::{Deserialize, Serialize};
 

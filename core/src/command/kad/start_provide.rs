@@ -30,11 +30,7 @@ impl<Req: CborMessage, Resp: CborMessage> CommandHandler<Req, Resp> for StartPro
     type Result = QueryStatsInfo;
 
     async fn run(&mut self, swarm: &mut CoreSwarm<Req, Resp>, handle: &ResultHandle<Self::Result>) {
-        match swarm
-            .behaviour_mut()
-            .kad
-            .start_providing(self.key.clone())
-        {
+        match swarm.behaviour_mut().kad.start_providing(self.key.clone()) {
             Ok(query_id) => {
                 self.query_id = Some(query_id);
             }

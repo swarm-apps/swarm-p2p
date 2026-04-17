@@ -31,11 +31,7 @@ where
 {
     type Result = ();
 
-    async fn run(
-        &mut self,
-        swarm: &mut CoreSwarm<Req, Resp>,
-        handle: &ResultHandle<Self::Result>,
-    ) {
+    async fn run(&mut self, swarm: &mut CoreSwarm<Req, Resp>, handle: &ResultHandle<Self::Result>) {
         let (Some(channel), Some(response)) = (self.channel.take(), self.response.take()) else {
             handle.finish(Err(Error::RequestResponse(
                 "SendResponse: run called twice".into(),

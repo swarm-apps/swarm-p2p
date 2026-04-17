@@ -176,10 +176,7 @@ mod tests {
         assert_eq!(config.req_resp_protocol, "/swarm-p2p/req/1.0.0");
         assert_eq!(config.req_resp_timeout, Duration::from_secs(120));
         assert!(config.enable_gossipsub);
-        assert_eq!(
-            config.gossipsub_heartbeat_interval,
-            Duration::from_secs(10)
-        );
+        assert_eq!(config.gossipsub_heartbeat_interval, Duration::from_secs(10));
     }
 
     #[test]
