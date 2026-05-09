@@ -19,11 +19,11 @@ SwarmDrop 的 DHT 引导 + Relay 中继节点，部署在公网 VPS 上为客户
 
 ### 1. 下载二进制
 
-从 [GitHub Releases](https://github.com/yexiyue/swarm-p2p/releases?q=bootstrap-v) 下载最新版本的 `swarm-bootstrap`（musl 静态编译，无依赖）：
+从 [GitHub Releases](https://github.com/swarm-apps/swarm-p2p/releases?q=bootstrap-v) 下载最新版本的 `swarm-bootstrap`（musl 静态编译，无依赖）：
 
 ```bash
 # 下载并赋予执行权限
-wget https://github.com/yexiyue/swarm-p2p/releases/latest/download/swarm-bootstrap
+wget https://github.com/swarm-apps/swarm-p2p/releases/latest/download/swarm-bootstrap
 chmod +x swarm-bootstrap
 ```
 
@@ -41,7 +41,7 @@ sudo ln -s /opt/swarm-bootstrap/swarm-bootstrap /usr/local/bin/swarm-bootstrap
 
 ```bash
 sudo wget -O /etc/systemd/system/swarm-bootstrap.service \
-    https://raw.githubusercontent.com/yexiyue/swarm-p2p/main/bootstrap/swarm-bootstrap.service
+    https://raw.githubusercontent.com/swarm-apps/swarm-p2p/main/bootstrap/swarm-bootstrap.service
 ```
 
 **编辑服务文件，添加公网 IP**（Relay 必须设置，否则客户端无法通过本节点中继）：

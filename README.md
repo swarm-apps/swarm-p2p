@@ -17,7 +17,7 @@
 
 ```toml
 [dependencies]
-swarm-p2p-core = { git = "https://github.com/yexiyue/swarm-p2p" }
+swarm-p2p-core = { git = "https://github.com/swarm-apps/swarm-p2p" }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 ```
