@@ -1,6 +1,6 @@
 services:
   swarm-bootstrap:
-    image: ghcr.io/yexiyue/swarm-bootstrap:latest
+    image: ghcr.io/swarm-apps/swarm-bootstrap:latest
     restart: unless-stopped
     ports:
       - "${SWARM_BOOTSTRAP_TCP_PORT:-4001}:${SWARM_BOOTSTRAP_TCP_PORT:-4001}/tcp"
