@@ -105,17 +105,62 @@ ghcr.io/swarm-apps/swarm-bootstrap:0.4.1
 
 ### Coolify
 
-在 Coolify 中创建 Docker Compose 资源，使用仓库里的 [`compose.coolify.yml`](compose.coolify.yml)。至少需要设置：
+在 Coolify 中可以通过 Docker Compose 资源启动一个独立的 `swarm-bootstrap` 服务。
+
+1. 新建项目（名称任意，例如 `swarm-p2p`）。
+2. 在项目中创建 `Docker Compose Empty` 资源。
+3. 粘贴仓库里的 [`compose.coolify.yml`](compose.coolify.yml)，或使用下面的通用 Compose 示例。
+4. 在环境变量中设置公网 IP：
 
 ```env
 SWARM_BOOTSTRAP_EXTERNAL_IP=<你的公网IP>
 ```
 
-部署后需要确认云服务器安全组和系统防火墙开放：
+5. 部署前确认云服务器安全组和系统防火墙开放：
 
-```bash
+```text
 4001/tcp
 4001/udp
+```
+
+6. 部署后在日志中确认出现：
+
+```text
+Node PeerId: <PeerId>
+Bootstrap+Relay node started, waiting for connections...
+```
+
+客户端需要配置的 multiaddr 为：
+
+```text
+/ip4/<公网IP>/tcp/4001/p2p/<PeerId>
+/ip4/<公网IP>/udp/4001/quic-v1/p2p/<PeerId>
+```
+
+如果 Coolify 显示 `unhealthy`，但日志中已经出现上述启动信息，通常是因为该服务不是 HTTP 服务、没有 HTTP healthcheck。此时应以容器日志和端口连通性为准。
+
+#### 从已有 systemd 服务迁移
+
+如果之前已经用 systemd 部署过，请复用旧的 `identity.key`，否则 PeerId 会改变，所有客户端都需要更新 bootstrap 地址。推荐把旧目录挂载到容器：
+
+```yaml
+volumes:
+  - /opt/swarm-bootstrap:/data
+```
+
+部署前停止旧服务，避免端口冲突：
+
+```bash
+sudo systemctl stop swarm-bootstrap
+sudo systemctl disable swarm-bootstrap
+```
+
+容器默认使用非 root 用户 `10001` 运行。若日志出现 `Permission denied (os error 13)`，需要修正宿主机目录权限：
+
+```bash
+sudo chown -R 10001:10001 /opt/swarm-bootstrap
+sudo chmod 700 /opt/swarm-bootstrap
+sudo chmod 600 /opt/swarm-bootstrap/identity.key
 ```
 
 ### Docker Compose
