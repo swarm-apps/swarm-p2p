@@ -19,11 +19,11 @@ SwarmDrop 的 DHT 引导 + Relay 中继节点，部署在公网 VPS 上为客户
 
 ### 1. 下载二进制
 
-从 [GitHub Releases](https://github.com/yexiyue/swarm-p2p/releases?q=bootstrap-v) 下载最新版本的 `swarm-bootstrap`（musl 静态编译，无依赖）：
+从 [GitHub Releases](https://github.com/swarm-apps/swarm-p2p/releases?q=bootstrap-v) 下载最新版本的 `swarm-bootstrap`（musl 静态编译，无依赖）：
 
 ```bash
 # 下载并赋予执行权限
-wget https://github.com/yexiyue/swarm-p2p/releases/latest/download/swarm-bootstrap
+wget https://github.com/swarm-apps/swarm-p2p/releases/latest/download/swarm-bootstrap
 chmod +x swarm-bootstrap
 ```
 
@@ -92,6 +92,63 @@ sudo ufw allow 4001/tcp
 sudo ufw allow 4001/udp
 ```
 
+## Docker / Coolify 部署
+
+`swarm-bootstrap` 也提供容器镜像，适合在 Coolify 等面板中一键部署：
+
+```text
+ghcr.io/swarm-apps/swarm-bootstrap:latest
+ghcr.io/swarm-apps/swarm-bootstrap:0.4.1
+```
+
+镜像发布为多架构 manifest，支持 `linux/amd64` 和 `linux/arm64`。Docker 会根据服务器架构自动选择对应镜像。
+
+### Coolify
+
+在 Coolify 中创建 Docker Compose 资源，使用仓库里的 [`compose.coolify.yml`](compose.coolify.yml)。至少需要设置：
+
+```env
+SWARM_BOOTSTRAP_EXTERNAL_IP=<你的公网IP>
+```
+
+部署后需要确认云服务器安全组和系统防火墙开放：
+
+```bash
+4001/tcp
+4001/udp
+```
+
+### Docker Compose
+
+```yaml
+services:
+  swarm-bootstrap:
+    image: ghcr.io/swarm-apps/swarm-bootstrap:latest
+    restart: unless-stopped
+    ports:
+      - "4001:4001/tcp"
+      - "4001:4001/udp"
+    volumes:
+      - swarm-bootstrap-data:/data
+    environment:
+      SWARM_BOOTSTRAP_EXTERNAL_IP: "<你的公网IP>"
+      SWARM_BOOTSTRAP_KEY_FILE: /data/identity.key
+      RUST_LOG: info
+
+volumes:
+  swarm-bootstrap-data:
+```
+
+查看 PeerId：
+
+```bash
+docker run --rm \
+  -v swarm-bootstrap-data:/data \
+  ghcr.io/swarm-apps/swarm-bootstrap:latest peer-id
+```
+
+> `identity.key` 决定 PeerId。容器部署时务必持久化 `/data/identity.key`，不要随意删除 volume。
+
 ## CLI
 
 ```
@@ -106,12 +163,37 @@ swarm-bootstrap run [OPTIONS]
     --listen-addr <IP>      监听 IP 地址           [默认: 0.0.0.0]
     --idle-timeout <SECS>   空闲连接超时(秒)       [默认: 120]
     --external-ip <IP>      公网 IP 地址（Relay Server 必须设置）
+    --max-reservations <N>                最大活跃 reservation 数       [默认: 128]
+    --max-reservations-per-peer <N>       单 peer 最大 reservation 数    [默认: 4]
+    --reservation-duration-secs <SECS>    reservation 有效期(秒)         [默认: 3600]
+    --max-circuits <N>                    最大活跃 circuit 数           [默认: 16]
+    --max-circuits-per-peer <N>           单 peer 最大 circuit 数        [默认: 4]
+    --max-circuit-duration-secs <SECS>    单 circuit 最长持续时间(秒)    [默认: 3600]
+    --max-circuit-bytes <BYTES>           单 circuit 最大转发字节数      [默认: 536870912]
 
 swarm-bootstrap peer-id [OPTIONS]
     --key-file <PATH>       密钥文件路径           [默认: 二进制所在目录/identity.key]
 ```
 
 `run` 的日志级别通过 `RUST_LOG` 环境变量控制，默认 `info`。
+
+常用环境变量：
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `SWARM_BOOTSTRAP_EXTERNAL_IP` | 公网 IP，Relay 必须设置 | 无 |
+| `SWARM_BOOTSTRAP_TCP_PORT` | TCP 监听端口 | `4001` |
+| `SWARM_BOOTSTRAP_QUIC_PORT` | QUIC 监听端口 | `4001` |
+| `SWARM_BOOTSTRAP_KEY_FILE` | 密钥文件路径 | 二进制目录下的 `identity.key` |
+| `SWARM_BOOTSTRAP_LISTEN_ADDR` | 监听 IP | `0.0.0.0` |
+| `SWARM_BOOTSTRAP_IDLE_TIMEOUT_SECS` | 空闲连接超时 | `120` |
+| `SWARM_BOOTSTRAP_MAX_RESERVATIONS` | 最大活跃 reservation 数 | `128` |
+| `SWARM_BOOTSTRAP_MAX_RESERVATIONS_PER_PEER` | 单 peer 最大 reservation 数 | `4` |
+| `SWARM_BOOTSTRAP_RESERVATION_DURATION_SECS` | reservation 有效期 | `3600` |
+| `SWARM_BOOTSTRAP_MAX_CIRCUITS` | 最大活跃 circuit 数 | `16` |
+| `SWARM_BOOTSTRAP_MAX_CIRCUITS_PER_PEER` | 单 peer 最大 circuit 数 | `4` |
+| `SWARM_BOOTSTRAP_MAX_CIRCUIT_DURATION_SECS` | 单 circuit 最长持续时间 | `3600` |
+| `SWARM_BOOTSTRAP_MAX_CIRCUIT_BYTES` | 单 circuit 最大转发字节数，`0` 表示不限制 | `536870912` |
 
 ## 密钥管理
 

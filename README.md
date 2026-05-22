@@ -233,7 +233,7 @@ swarm-p2p/
 └── bootstrap/   # swarm-bootstrap 引导+中继节点
 ```
 
-`bootstrap/` 是配套的公网节点，负责 DHT 引导和 Relay 中继。详见 [bootstrap/README.md](bootstrap/README.md)。
+`bootstrap/` 是配套的公网节点，负责 DHT 引导和 Relay 中继。它提供 GitHub Release 二进制，以及 `ghcr.io/swarm-apps/swarm-bootstrap` 多架构容器镜像（`linux/amd64`、`linux/arm64`），可用于 Coolify / Docker Compose 部署。详见 [bootstrap/README.md](bootstrap/README.md)。
 
 ## 构建
 
