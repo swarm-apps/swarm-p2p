@@ -1,9 +1,14 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Result, ensure};
 use clap::{Parser, Subcommand};
 use libp2p::Multiaddr;
+use swarm_bootstrap::behaviour::{
+    DEFAULT_MAX_CIRCUIT_BYTES, DEFAULT_MAX_CIRCUIT_DURATION_SECS, DEFAULT_MAX_CIRCUITS,
+    DEFAULT_MAX_CIRCUITS_PER_PEER, DEFAULT_MAX_RESERVATIONS, DEFAULT_MAX_RESERVATIONS_PER_PEER,
+    DEFAULT_RESERVATION_DURATION_SECS, RelayLimits,
+};
 use tracing::info;
 
 /// SwarmDrop 引导+中继节点
@@ -20,34 +25,62 @@ enum Command {
     /// 启动引导+中继节点
     Run {
         /// TCP 监听端口
-        #[arg(long, default_value = "4001")]
+        #[arg(long, env = "SWARM_BOOTSTRAP_TCP_PORT", default_value_t = 4001)]
         tcp_port: u16,
 
         /// QUIC 监听端口
-        #[arg(long, default_value = "4001")]
+        #[arg(long, env = "SWARM_BOOTSTRAP_QUIC_PORT", default_value_t = 4001)]
         quic_port: u16,
 
         /// 密钥文件路径（默认从二进制所在目录查找 identity.key）
-        #[arg(long)]
+        #[arg(long, env = "SWARM_BOOTSTRAP_KEY_FILE")]
         key_file: Option<PathBuf>,
 
         /// 监听的 IP 地址
-        #[arg(long, default_value = "0.0.0.0")]
+        #[arg(long, env = "SWARM_BOOTSTRAP_LISTEN_ADDR", default_value = "0.0.0.0")]
         listen_addr: String,
 
         /// 空闲连接超时（秒）
-        #[arg(long, default_value = "120")]
+        #[arg(long, env = "SWARM_BOOTSTRAP_IDLE_TIMEOUT_SECS", default_value_t = 120)]
         idle_timeout: u64,
 
         /// 公网 IP 地址（relay server 必须设置，否则 reservation 响应不含地址）
-        #[arg(long)]
+        #[arg(long, env = "SWARM_BOOTSTRAP_EXTERNAL_IP")]
         external_ip: Option<String>,
+
+        /// Maximum active relay reservations.
+        #[arg(long, env = "SWARM_BOOTSTRAP_MAX_RESERVATIONS", default_value_t = DEFAULT_MAX_RESERVATIONS)]
+        max_reservations: usize,
+
+        /// Maximum active relay reservations per peer.
+        #[arg(long, env = "SWARM_BOOTSTRAP_MAX_RESERVATIONS_PER_PEER", default_value_t = DEFAULT_MAX_RESERVATIONS_PER_PEER)]
+        max_reservations_per_peer: usize,
+
+        /// Relay reservation lifetime in seconds.
+        #[arg(long, env = "SWARM_BOOTSTRAP_RESERVATION_DURATION_SECS", default_value_t = DEFAULT_RESERVATION_DURATION_SECS)]
+        reservation_duration_secs: u64,
+
+        /// Maximum active relay circuits.
+        #[arg(long, env = "SWARM_BOOTSTRAP_MAX_CIRCUITS", default_value_t = DEFAULT_MAX_CIRCUITS)]
+        max_circuits: usize,
+
+        /// Maximum active relay circuits per peer.
+        #[arg(long, env = "SWARM_BOOTSTRAP_MAX_CIRCUITS_PER_PEER", default_value_t = DEFAULT_MAX_CIRCUITS_PER_PEER)]
+        max_circuits_per_peer: usize,
+
+        /// Maximum relay circuit lifetime in seconds.
+        #[arg(long, env = "SWARM_BOOTSTRAP_MAX_CIRCUIT_DURATION_SECS", default_value_t = DEFAULT_MAX_CIRCUIT_DURATION_SECS)]
+        max_circuit_duration_secs: u64,
+
+        /// Maximum bytes forwarded by one relay circuit. 0 disables the byte limit.
+        #[arg(long, env = "SWARM_BOOTSTRAP_MAX_CIRCUIT_BYTES", default_value_t = DEFAULT_MAX_CIRCUIT_BYTES)]
+        max_circuit_bytes: u64,
     },
 
     /// 打印节点 PeerId 后退出
     PeerId {
         /// 密钥文件路径（默认从二进制所在目录查找 identity.key）
-        #[arg(long)]
+        #[arg(long, env = "SWARM_BOOTSTRAP_KEY_FILE")]
         key_file: Option<PathBuf>,
     },
 }
@@ -82,6 +115,13 @@ fn main() -> Result<()> {
             listen_addr,
             idle_timeout,
             external_ip,
+            max_reservations,
+            max_reservations_per_peer,
+            reservation_duration_secs,
+            max_circuits,
+            max_circuits_per_peer,
+            max_circuit_duration_secs,
+            max_circuit_bytes,
         } => {
             tracing_subscriber::fmt()
                 .with_env_filter(
@@ -95,8 +135,7 @@ fn main() -> Result<()> {
             let peer_id = keypair.public().to_peer_id();
             info!("Node PeerId: {}", peer_id);
 
-            let tcp_addr: Multiaddr =
-                format!("/ip4/{}/tcp/{}", listen_addr, tcp_port).parse()?;
+            let tcp_addr: Multiaddr = format!("/ip4/{}/tcp/{}", listen_addr, tcp_port).parse()?;
             let quic_addr: Multiaddr =
                 format!("/ip4/{}/udp/{}/quic-v1", listen_addr, quic_port).parse()?;
 
@@ -112,6 +151,22 @@ fn main() -> Result<()> {
                 vec![]
             };
 
+            ensure!(
+                max_circuit_duration_secs <= u32::MAX as u64,
+                "max circuit duration must not exceed {} seconds",
+                u32::MAX
+            );
+
+            let relay_limits = RelayLimits {
+                max_reservations,
+                max_reservations_per_peer,
+                reservation_duration: Duration::from_secs(reservation_duration_secs),
+                max_circuits,
+                max_circuits_per_peer,
+                max_circuit_duration: Duration::from_secs(max_circuit_duration_secs),
+                max_circuit_bytes,
+            };
+
             tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()?
@@ -121,6 +176,7 @@ fn main() -> Result<()> {
                     quic_addr,
                     Duration::from_secs(idle_timeout),
                     external_addrs,
+                    relay_limits,
                 ))?;
         }
     }

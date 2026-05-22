@@ -3,11 +3,11 @@ pub mod util;
 
 use anyhow::Result;
 use futures::StreamExt;
-use libp2p::{identity::Keypair, noise, swarm::SwarmEvent, tcp, yamux, Multiaddr, SwarmBuilder};
+use libp2p::{Multiaddr, SwarmBuilder, identity::Keypair, noise, swarm::SwarmEvent, tcp, yamux};
 use std::time::Duration;
 use tracing::{debug, info};
 
-use behaviour::BootstrapBehaviourEvent;
+use behaviour::{BootstrapBehaviourEvent, RelayLimits};
 
 /// 启动引导+中继节点
 ///
@@ -18,20 +18,27 @@ pub async fn run(
     quic_addr: Multiaddr,
     idle_timeout: Duration,
     external_addrs: Vec<Multiaddr>,
+    relay_limits: RelayLimits,
 ) -> Result<()> {
     // 引导节点不调用 .with_relay_client()
     // 闭包签名为 |key| 而非 |key, relay_client|
     let mut swarm = SwarmBuilder::with_existing_identity(keypair)
         .with_tokio()
-        .with_tcp(tcp::Config::default(), noise::Config::new, yamux::Config::default)?
+        .with_tcp(
+            tcp::Config::default(),
+            noise::Config::new,
+            yamux::Config::default,
+        )?
         .with_quic()
         .with_dns()?
-        .with_behaviour(behaviour::BootstrapBehaviour::new)?
+        .with_behaviour(|keypair| behaviour::BootstrapBehaviour::new(keypair, relay_limits))?
         .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(idle_timeout))
         .build();
 
     swarm.listen_on(tcp_addr)?;
     swarm.listen_on(quic_addr)?;
+
+    info!(?relay_limits, "Relay limits configured");
 
     // 注册公网地址，relay reservation 响应会携带这些地址给 client
     for addr in &external_addrs {

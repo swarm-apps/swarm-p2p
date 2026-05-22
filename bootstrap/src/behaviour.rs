@@ -3,6 +3,39 @@ use std::time::Duration;
 
 use libp2p::{autonat, identify, identity::Keypair, kad, ping, relay, swarm::NetworkBehaviour};
 
+pub const DEFAULT_MAX_RESERVATIONS: usize = 128;
+pub const DEFAULT_MAX_RESERVATIONS_PER_PEER: usize = 4;
+pub const DEFAULT_RESERVATION_DURATION_SECS: u64 = 3600;
+pub const DEFAULT_MAX_CIRCUITS: usize = 16;
+pub const DEFAULT_MAX_CIRCUITS_PER_PEER: usize = 4;
+pub const DEFAULT_MAX_CIRCUIT_DURATION_SECS: u64 = 3600;
+pub const DEFAULT_MAX_CIRCUIT_BYTES: u64 = 1024 * 1024 * 512;
+
+#[derive(Debug, Clone, Copy)]
+pub struct RelayLimits {
+    pub max_reservations: usize,
+    pub max_reservations_per_peer: usize,
+    pub reservation_duration: Duration,
+    pub max_circuits: usize,
+    pub max_circuits_per_peer: usize,
+    pub max_circuit_duration: Duration,
+    pub max_circuit_bytes: u64,
+}
+
+impl Default for RelayLimits {
+    fn default() -> Self {
+        Self {
+            max_reservations: DEFAULT_MAX_RESERVATIONS,
+            max_reservations_per_peer: DEFAULT_MAX_RESERVATIONS_PER_PEER,
+            reservation_duration: Duration::from_secs(DEFAULT_RESERVATION_DURATION_SECS),
+            max_circuits: DEFAULT_MAX_CIRCUITS,
+            max_circuits_per_peer: DEFAULT_MAX_CIRCUITS_PER_PEER,
+            max_circuit_duration: Duration::from_secs(DEFAULT_MAX_CIRCUIT_DURATION_SECS),
+            max_circuit_bytes: DEFAULT_MAX_CIRCUIT_BYTES,
+        }
+    }
+}
+
 /// 引导+中继节点的轻量网络行为
 ///
 /// 只包含服务端必需的协议：
@@ -21,7 +54,7 @@ pub struct BootstrapBehaviour {
 }
 
 impl BootstrapBehaviour {
-    pub fn new(keypair: &Keypair) -> Self {
+    pub fn new(keypair: &Keypair, relay_limits: RelayLimits) -> Self {
         let peer_id = keypair.public().to_peer_id();
 
         // ===== Ping =====
@@ -64,8 +97,13 @@ impl BootstrapBehaviour {
         // 放大限制以支持大文件传输（理想情况下 DCUtR 打洞成功后会走直连，
         // relay 只在打洞失败时作为兜底）。
         let relay_config = relay::Config {
-            max_circuit_bytes: 1024 * 1024 * 512, // 512 MB
-            max_circuit_duration: Duration::from_secs(3600), // 1 小时
+            max_reservations: relay_limits.max_reservations,
+            max_reservations_per_peer: relay_limits.max_reservations_per_peer,
+            reservation_duration: relay_limits.reservation_duration,
+            max_circuits: relay_limits.max_circuits,
+            max_circuits_per_peer: relay_limits.max_circuits_per_peer,
+            max_circuit_bytes: relay_limits.max_circuit_bytes,
+            max_circuit_duration: relay_limits.max_circuit_duration,
             ..Default::default()
         };
         let relay = relay::Behaviour::new(peer_id, relay_config);
