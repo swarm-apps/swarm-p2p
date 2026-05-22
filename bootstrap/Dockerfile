@@ -1,6 +1,6 @@
 # Build from the libs workspace root:
 # docker build -f bootstrap/Dockerfile -t swarm-bootstrap:local .
-FROM rust:1.85-bookworm AS builder
+FROM rust:1-bookworm AS builder
 
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
