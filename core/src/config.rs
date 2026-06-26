@@ -1,6 +1,8 @@
 use std::time::Duration;
 
-use libp2p::{Multiaddr, PeerId};
+use libp2p::{Multiaddr, PeerId, StreamProtocol};
+
+use crate::data_channel::DataChannelLimits;
 
 /// 节点配置
 #[derive(Debug, Clone)]
@@ -54,6 +56,20 @@ pub struct NodeConfig {
     ///
     /// 配对等需要用户交互的场景，默认 10 秒太短，建议 120 秒。
     pub req_resp_timeout: Duration,
+
+    /// 注册的 data-channel 协议（应用自定义字节流协议，如 `/swarmdrop/transfer-data/1`）。
+    ///
+    /// 空表示不接受任何 data-channel 入站流。
+    pub data_channel_protocols: Vec<StreamProtocol>,
+
+    /// data-channel 出站打开超时。
+    pub data_channel_open_timeout: Duration,
+
+    /// data-channel 空闲超时（保留，供未来空闲回收用）。
+    pub data_channel_idle_timeout: Duration,
+
+    /// data-channel 活跃通道数量限制（per-peer / per-protocol）。
+    pub data_channel_limits: DataChannelLimits,
 }
 
 impl Default for NodeConfig {
@@ -77,6 +93,10 @@ impl Default for NodeConfig {
             kad_server_mode: false,
             req_resp_protocol: "/swarm-p2p/req/1.0.0".into(),
             req_resp_timeout: Duration::from_secs(120),
+            data_channel_protocols: vec![],
+            data_channel_open_timeout: Duration::from_secs(30),
+            data_channel_idle_timeout: Duration::from_secs(300),
+            data_channel_limits: DataChannelLimits::default(),
         }
     }
 }
@@ -132,6 +152,24 @@ impl NodeConfig {
 
     pub fn with_req_resp_timeout(mut self, timeout: Duration) -> Self {
         self.req_resp_timeout = timeout;
+        self
+    }
+
+    /// 注册 data-channel 协议。
+    pub fn with_data_channel_protocols(mut self, protocols: Vec<StreamProtocol>) -> Self {
+        self.data_channel_protocols = protocols;
+        self
+    }
+
+    /// 设置 data-channel 出站打开超时。
+    pub fn with_data_channel_open_timeout(mut self, timeout: Duration) -> Self {
+        self.data_channel_open_timeout = timeout;
+        self
+    }
+
+    /// 设置 data-channel 数量限制。
+    pub fn with_data_channel_limits(mut self, limits: DataChannelLimits) -> Self {
+        self.data_channel_limits = limits;
         self
     }
 }

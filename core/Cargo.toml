@@ -23,6 +23,9 @@ libp2p = { version = "0.56.0", features = [
     "serde",
     "cbor"
 ] }
+# libp2p-stream 仍是 alpha，未纳入 libp2p 0.56 stable facade 的 feature，
+# 需作为独立 crate 直接依赖（与 libp2p 0.56 同期，对齐 libp2p-swarm 0.47.x）。
+libp2p-stream = "0.4.0-alpha"
 tokio = { version = "1.49.0", features = ["macros", "sync", "rt"] }
 futures = "0.3.31"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -39,3 +42,8 @@ default = ["client"]
 client = []
 server = []
 dns = ["libp2p/dns"]
+
+[dev-dependencies]
+# 测试用 #[tokio::test(flavor = "multi_thread")] + timeout，
+# 显式声明这些 feature，避免仅靠 workspace feature unification（单独构建 core 时会缺）。
+tokio = { version = "1.49.0", features = ["macros", "sync", "rt", "rt-multi-thread", "time"] }

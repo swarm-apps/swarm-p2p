@@ -17,9 +17,9 @@ async fn dual_node_full_flow() {
     let keypair_a = swarm_p2p_core::libp2p::identity::Keypair::generate_ed25519();
     let keypair_b = swarm_p2p_core::libp2p::identity::Keypair::generate_ed25519();
 
-    let (client_a, events_a) =
+    let (client_a, events_a, _dc_a) =
         start::<Ping, Pong>(keypair_a, test_config()).expect("failed to start node A");
-    let (client_b, events_b) =
+    let (client_b, events_b, _dc_b) =
         start::<Ping, Pong>(keypair_b, test_config()).expect("failed to start node B");
 
     // 用 channel 从 B 的事件监听 task 传回 inbound request 信息

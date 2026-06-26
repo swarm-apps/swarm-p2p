@@ -2,14 +2,19 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use futures::StreamExt;
+use futures::stream::{BoxStream, SelectAll};
 use libp2p::request_response::{Event as ReqRespEvent, Message};
 use libp2p::swarm::SwarmEvent;
-use libp2p::{autonat, dcutr, ping};
+use libp2p::{PeerId, Stream, StreamProtocol, autonat, dcutr, ping};
+use libp2p_stream::IncomingStreams;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use super::{CborMessage, CoreBehaviourEvent};
 use crate::command::{Command, CoreSwarm};
+use crate::data_channel::{
+    ChannelRegistry, DataChannel, DataChannelDirection, DataChannelId, InboundDataChannel,
+};
 use crate::event::{NatStatus, NodeEvent};
 use crate::pending_map::PendingMap;
 
@@ -32,6 +37,13 @@ where
     /// Bootstrap 节点地址映射（peer_id → 地址列表），
     /// 用于在连接建立后申请 relay reservation
     bootstrap_peers: HashMap<libp2p::PeerId, Vec<libp2p::Multiaddr>>,
+    /// 入站数据通道流（多协议合并），在 `select!` 中持续 poll；
+    /// 空集合时该分支被守卫跳过，不会 busy-loop。
+    inbound_channels: SelectAll<BoxStream<'static, (StreamProtocol, PeerId, Stream)>>,
+    /// 数据通道配额登记表（入站 limit 校验）。
+    dc_registry: ChannelRegistry,
+    /// 入站数据通道转交端（非阻塞 try_send 给运行时消费者）。
+    inbound_dc_tx: mpsc::Sender<InboundDataChannel>,
 }
 
 impl<Req, Resp> EventLoop<Req, Resp>
@@ -39,13 +51,29 @@ where
     Req: CborMessage,
     Resp: CborMessage,
 {
-    pub fn new(
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "事件循环装配需要完整运行时上下文"
+    )]
+    pub(crate) fn new(
         swarm: CoreSwarm<Req, Resp>,
         command_rx: mpsc::Receiver<Command<Req, Resp>>,
         event_tx: mpsc::Sender<NodeEvent<Req>>,
         pending_channels: PendingMap<u64, libp2p::request_response::ResponseChannel<Resp>>,
         protocol_version: String,
+        inbound_protocol_streams: Vec<(StreamProtocol, IncomingStreams)>,
+        dc_registry: ChannelRegistry,
+        inbound_dc_tx: mpsc::Sender<InboundDataChannel>,
     ) -> Self {
+        // 把每个协议的入站流贴上 protocol 标签后合并，统一在 select! 中 poll。
+        let inbound_channels =
+            futures::stream::select_all(inbound_protocol_streams.into_iter().map(
+                |(proto, incoming)| {
+                    incoming
+                        .map(move |(peer, stream)| (proto.clone(), peer, stream))
+                        .boxed()
+                },
+            ));
         Self {
             swarm,
             command_rx,
@@ -55,6 +83,9 @@ where
             pending_channels,
             pending_id_counter: AtomicU64::new(0),
             bootstrap_peers: HashMap::new(),
+            inbound_channels,
+            dc_registry,
+            inbound_dc_tx,
         }
     }
 
@@ -93,6 +124,8 @@ where
     /// 运行事件循环
     pub async fn run(mut self) {
         loop {
+            // 清理调用方已 drop / 取消的 active command（避免泄漏到全局 timeout）
+            self.active_commands.retain(|cmd| !cmd.is_cancelled());
             tokio::select! {
                 // 处理外部命令
                 cmd = self.command_rx.recv() => {
@@ -108,6 +141,48 @@ where
                 event = self.swarm.select_next_some() => {
                     self.handle_swarm_event(event).await;
                 }
+                // 处理入站数据通道（空集合时跳过该分支，避免 busy-loop）
+                maybe_inbound = self.inbound_channels.next(), if !self.inbound_channels.is_empty() => {
+                    if let Some((protocol, peer, stream)) = maybe_inbound {
+                        self.handle_inbound_channel(protocol, peer, stream);
+                    }
+                }
+            }
+        }
+    }
+
+    /// 接受入站数据通道：校验 limit、生成 handle、非阻塞转交给消费者。
+    ///
+    /// 绝不阻塞 swarm 循环——转交用 `try_send`，消费者落后时丢弃并告警，
+    /// 而非反压拖死 ping / kad / identify。
+    fn handle_inbound_channel(&mut self, protocol: StreamProtocol, peer: PeerId, stream: Stream) {
+        let Some(guard) =
+            self.dc_registry
+                .try_acquire(peer, protocol.clone(), DataChannelDirection::Inbound)
+        else {
+            warn!(
+                "入站数据通道被拒绝（超出 limit）: peer={}, protocol={}",
+                peer, protocol
+            );
+            drop(stream);
+            return;
+        };
+        let id = DataChannelId::next();
+        let channel = DataChannel::new(
+            id,
+            peer,
+            protocol,
+            DataChannelDirection::Inbound,
+            stream,
+            Some(guard),
+        );
+        match self.inbound_dc_tx.try_send(InboundDataChannel { channel }) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                warn!("入站数据通道丢弃：消费者落后（channel 满），peer={}", peer)
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                debug!("入站数据通道丢弃：消费者已关闭")
             }
         }
     }
@@ -199,8 +274,7 @@ where
                         {
                             addr.clone()
                         } else {
-                            addr.clone()
-                                .with(libp2p::multiaddr::Protocol::P2p(peer_id))
+                            addr.clone().with(libp2p::multiaddr::Protocol::P2p(peer_id))
                         };
                         let relay_addr = base.with(libp2p::multiaddr::Protocol::P2pCircuit);
                         match self.swarm.listen_on(relay_addr.clone()) {

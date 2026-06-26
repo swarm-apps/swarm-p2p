@@ -48,6 +48,7 @@ where
     pub relay_client: relay::client::Behaviour,
     pub autonat: autonat::v2::client::Behaviour,
     pub dcutr: dcutr::Behaviour,
+    pub stream: libp2p_stream::Behaviour,
 }
 
 impl<Req, Resp> CoreBehaviour<Req, Resp>
@@ -150,6 +151,11 @@ where
             request_response::Config::default().with_request_timeout(config.req_resp_timeout),
         );
 
+        // ===== Data Channel (libp2p-stream) =====
+        // 通用应用自定义字节流。Behaviour 不通过 SwarmEvent 交互，
+        // 而是由运行时持有 Control + IncomingStreams（见 node.rs / event_loop.rs）。
+        let stream = libp2p_stream::Behaviour::new();
+
         Self {
             ping,
             identify,
@@ -159,6 +165,7 @@ where
             autonat,
             dcutr,
             req_resp,
+            stream,
         }
     }
 }

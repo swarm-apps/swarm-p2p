@@ -60,3 +60,16 @@ where
         this.handle.poll(cx)
     }
 }
+
+impl<T, Req, Resp> Drop for CommandFuture<T, Req, Resp>
+where
+    T: CommandHandler<Req, Resp> + Send + 'static,
+    Req: CborMessage,
+    Resp: CborMessage,
+{
+    fn drop(&mut self) {
+        // 调用方放弃等待（取消 / 超时）：标记 handle，event loop 下个 tick 清理对应
+        // active command，避免它残留到全局 req_resp timeout 才被回收。
+        self.handle.cancel();
+    }
+}

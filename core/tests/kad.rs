@@ -10,8 +10,8 @@ mod common;
 use std::time::Duration;
 
 use common::*;
-use libp2p::kad::{Record, RecordKey};
 use libp2p::PeerId;
+use libp2p::kad::{Record, RecordKey};
 use swarm_p2p_core::{NodeConfig, NodeEvent, start};
 use tokio::sync::oneshot;
 use tokio::time::timeout;
@@ -49,10 +49,7 @@ async fn wait_for_listen_addr(
 }
 
 /// 等待指定节点的 IdentifyReceived
-async fn wait_for_identify(
-    events: &mut swarm_p2p_core::EventReceiver<Ping>,
-    label: &str,
-) {
+async fn wait_for_identify(events: &mut swarm_p2p_core::EventReceiver<Ping>, label: &str) {
     let result = timeout(KAD_TIMEOUT, async {
         loop {
             if let Some(event) = events.recv().await {
@@ -73,7 +70,7 @@ async fn three_node_kad_flow() {
     let keypair_s = swarm_p2p_core::libp2p::identity::Keypair::generate_ed25519();
     let peer_s_id = PeerId::from_public_key(&keypair_s.public());
 
-    let (_client_s, mut events_s) =
+    let (_client_s, mut events_s, _dc_s) =
         start::<Ping, Pong>(keypair_s, kad_config()).expect("failed to start boot node S");
 
     // 获取 S 的监听地址
@@ -90,17 +87,15 @@ async fn three_node_kad_flow() {
     let keypair_b = swarm_p2p_core::libp2p::identity::Keypair::generate_ed25519();
     let peer_a_id = PeerId::from_public_key(&keypair_a.public());
 
-    let (client_a, mut events_a) = start::<Ping, Pong>(
+    let (client_a, mut events_a, _dc_a) = start::<Ping, Pong>(
         keypair_a,
         kad_config_with_bootstrap(peer_s_id, boot_addr.clone()),
     )
     .expect("failed to start node A");
 
-    let (client_b, mut events_b) = start::<Ping, Pong>(
-        keypair_b,
-        kad_config_with_bootstrap(peer_s_id, boot_addr),
-    )
-    .expect("failed to start node B");
+    let (client_b, mut events_b, _dc_b) =
+        start::<Ping, Pong>(keypair_b, kad_config_with_bootstrap(peer_s_id, boot_addr))
+            .expect("failed to start node B");
 
     // ===== 3. 等待 A 和 B 与引导节点完成 Identify =====
     // wait_for_identify 内部已 assert

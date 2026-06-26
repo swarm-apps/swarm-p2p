@@ -1,10 +1,10 @@
 use async_trait::async_trait;
 use libp2p::PeerId;
-use libp2p::request_response::{Event, Message, OutboundRequestId};
+use libp2p::request_response::{Event, Message, OutboundFailure, OutboundRequestId};
 use libp2p::swarm::SwarmEvent;
 use tracing::{error, info};
 
-use crate::error::Error;
+use crate::error::{Error, NetworkFailureKind};
 use crate::runtime::{CborMessage, CoreBehaviourEvent};
 
 use super::super::{CommandHandler, CoreSwarm, OnEventResult, ResultHandle};
@@ -82,13 +82,22 @@ where
                 ..
             })) if self.request_id.as_ref() == Some(&request_id) && peer == self.peer_id => {
                 error!("Request to {} failed: {:?}", peer, error);
-                handle.finish(Err(Error::RequestResponse(format!(
-                    "Request to {} failed: {:?}",
-                    peer, error
-                ))));
+                handle.finish(Err(map_outbound_failure(&error)));
                 (false, None) // 消费，完成
             }
             other => (true, Some(other)), // 继续等待
         }
     }
+}
+
+/// 将 request-response 的 `OutboundFailure` 归一化为 typed network failure。
+fn map_outbound_failure(err: &OutboundFailure) -> Error {
+    let kind = match err {
+        OutboundFailure::DialFailure => NetworkFailureKind::DialFailure,
+        OutboundFailure::Timeout => NetworkFailureKind::Timeout,
+        OutboundFailure::ConnectionClosed => NetworkFailureKind::ConnectionClosed,
+        OutboundFailure::UnsupportedProtocols => NetworkFailureKind::UnsupportedProtocol,
+        _ => NetworkFailureKind::Unknown,
+    };
+    Error::Network(kind)
 }

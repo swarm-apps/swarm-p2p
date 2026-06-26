@@ -90,10 +90,10 @@ pub async fn event_printer(
         };
         eprintln!("[{}] {:?}", label, event);
 
-        if matches!(&event, NodeEvent::IdentifyReceived { .. }) {
-            if let Some(tx) = identify_tx.take() {
-                let _ = tx.send(());
-            }
+        if matches!(&event, NodeEvent::IdentifyReceived { .. })
+            && let Some(tx) = identify_tx.take()
+        {
+            let _ = tx.send(());
         }
     }
 }

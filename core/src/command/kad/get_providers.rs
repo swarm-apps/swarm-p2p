@@ -41,7 +41,11 @@ impl GetProvidersCommand {
 impl<Req: CborMessage, Resp: CborMessage> CommandHandler<Req, Resp> for GetProvidersCommand {
     type Result = GetProvidersResult;
 
-    async fn run(&mut self, swarm: &mut CoreSwarm<Req, Resp>, _handle: &ResultHandle<Self::Result>) {
+    async fn run(
+        &mut self,
+        swarm: &mut CoreSwarm<Req, Resp>,
+        _handle: &ResultHandle<Self::Result>,
+    ) {
         let query_id = swarm.behaviour_mut().kad.get_providers(self.key.clone());
         self.query_id = Some(query_id);
     }

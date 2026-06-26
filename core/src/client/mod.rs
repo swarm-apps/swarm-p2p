@@ -2,7 +2,10 @@ mod future;
 mod kad;
 mod req_resp;
 
-use libp2p::{Multiaddr, PeerId};
+use std::time::Duration;
+
+use libp2p::{Multiaddr, PeerId, StreamProtocol};
+use libp2p_stream::{Control, OpenStreamError};
 use tokio::sync::mpsc;
 
 use crate::Result;
@@ -10,6 +13,10 @@ use crate::command::{
     AddPeerAddrsCommand, Command, DialCommand, DisconnectCommand, GetListenAddrsCommand,
     IsConnectedCommand,
 };
+use crate::data_channel::{
+    ChannelRegistry, DataChannel, DataChannelCloseReason, DataChannelDirection, DataChannelId,
+};
+use crate::error::{Error, NetworkFailureKind};
 use crate::event::NodeEvent;
 use crate::pending_map::PendingMap;
 use crate::runtime::CborMessage;
@@ -23,6 +30,12 @@ where
 {
     command_tx: mpsc::Sender<Command<Req, Resp>>,
     pending_channels: PendingMap<u64, libp2p::request_response::ResponseChannel<Resp>>,
+    /// libp2p-stream control，用于打开出站数据通道。
+    control: Control,
+    /// 数据通道配额登记表（出站 limit 校验）。
+    dc_registry: ChannelRegistry,
+    /// 数据通道出站打开超时。
+    dc_open_timeout: Duration,
 }
 
 impl<Req, Resp> Clone for NetClient<Req, Resp>
@@ -34,6 +47,9 @@ where
         Self {
             command_tx: self.command_tx.clone(),
             pending_channels: self.pending_channels.clone(),
+            control: self.control.clone(),
+            dc_registry: self.dc_registry.clone(),
+            dc_open_timeout: self.dc_open_timeout,
         }
     }
 }
@@ -46,10 +62,16 @@ where
     pub(crate) fn new(
         command_tx: mpsc::Sender<Command<Req, Resp>>,
         pending_channels: PendingMap<u64, libp2p::request_response::ResponseChannel<Resp>>,
+        control: Control,
+        dc_registry: ChannelRegistry,
+        dc_open_timeout: Duration,
     ) -> Self {
         Self {
             command_tx,
             pending_channels,
+            control,
+            dc_registry,
+            dc_open_timeout,
         }
     }
 
@@ -83,6 +105,41 @@ where
         CommandFuture::new(cmd, self.command_tx.clone()).await
     }
 
+    /// 向已连接 peer 打开一条出站数据通道。
+    ///
+    /// `protocol` 必须是已注册的 data-channel 协议。超时 / 对端不支持 / 资源限制
+    /// 均映射为 typed error（`Error::Network` / `Error::DataChannel`）。
+    pub async fn open_data_channel(
+        &self,
+        peer_id: PeerId,
+        protocol: StreamProtocol,
+    ) -> Result<DataChannel> {
+        // per-peer / per-protocol 出站 limit 校验（满则显式拒绝，不依赖底层静默丢弃）
+        let guard = self
+            .dc_registry
+            .try_acquire(peer_id, protocol.clone(), DataChannelDirection::Outbound)
+            .ok_or(Error::DataChannel(
+                DataChannelCloseReason::ResourceLimitExceeded,
+            ))?;
+
+        let id = DataChannelId::next();
+        let mut control = self.control.clone();
+        let open = control.open_stream(peer_id, protocol.clone());
+        let stream = match tokio::time::timeout(self.dc_open_timeout, open).await {
+            Ok(Ok(stream)) => stream,
+            Ok(Err(e)) => return Err(map_open_stream_error(e)),
+            Err(_elapsed) => return Err(Error::Network(NetworkFailureKind::Timeout)),
+        };
+        Ok(DataChannel::new(
+            id,
+            peer_id,
+            protocol,
+            DataChannelDirection::Outbound,
+            stream,
+            Some(guard),
+        ))
+    }
+
     pub fn shutdown(self) {
         drop(self.command_tx);
     }
@@ -101,5 +158,17 @@ impl<Req> EventReceiver<Req> {
     /// 接收下一个事件
     pub async fn recv(&mut self) -> Option<NodeEvent<Req>> {
         self.event_rx.recv().await
+    }
+}
+
+/// 将 `libp2p-stream` 的 `OpenStreamError` 归一化为 typed close reason。
+fn map_open_stream_error(err: OpenStreamError) -> Error {
+    match err {
+        OpenStreamError::UnsupportedProtocol(_) => {
+            Error::DataChannel(DataChannelCloseReason::UnsupportedProtocol)
+        }
+        OpenStreamError::Io(e) => Error::DataChannel(DataChannelCloseReason::Io(e.to_string())),
+        // OpenStreamError 标了 #[non_exhaustive]，未知变体归一化为 Unknown。
+        _ => Error::Network(NetworkFailureKind::Unknown),
     }
 }

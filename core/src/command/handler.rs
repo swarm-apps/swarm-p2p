@@ -29,6 +29,8 @@ pub struct ResultHandle<T>(Arc<Mutex<ResultState<T>>>);
 struct ResultState<T> {
     result: Option<crate::Result<T>>,
     waker: Option<Waker>,
+    /// 调用方（CommandFuture）是否已 drop / 取消。
+    cancelled: bool,
 }
 
 impl<T> Default for ResultState<T> {
@@ -36,6 +38,7 @@ impl<T> Default for ResultState<T> {
         Self {
             result: None,
             waker: None,
+            cancelled: false,
         }
     }
 }
@@ -74,6 +77,16 @@ impl<T> ResultHandle<T> {
         if let Some(waker) = state.waker.take() {
             waker.wake();
         }
+    }
+
+    /// 标记调用方已取消（CommandFuture drop 时调用）。
+    pub fn cancel(&self) {
+        self.0.lock().cancelled = true;
+    }
+
+    /// 调用方是否已取消，event loop 据此清理对应 active command。
+    pub fn is_cancelled(&self) -> bool {
+        self.0.lock().cancelled
     }
 }
 
@@ -122,6 +135,8 @@ where
         &mut self,
         event: SwarmEvent<CoreBehaviourEvent<Req, Resp>>,
     ) -> OnEventResult<Req, Resp>;
+    /// 调用方 future 是否已 drop / 取消。
+    fn is_cancelled(&self) -> bool;
 }
 
 /// 命令任务，包装 CommandHandler + ResultHandle
@@ -168,5 +183,9 @@ where
         event: SwarmEvent<CoreBehaviourEvent<Req, Resp>>,
     ) -> OnEventResult<Req, Resp> {
         self.handler.on_event(event, &self.handle).await
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.handle.is_cancelled()
     }
 }

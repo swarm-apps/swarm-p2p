@@ -74,19 +74,15 @@ fn handle_event(event: SwarmEvent<BootstrapBehaviourEvent>) {
             peer_id,
             num_established,
             ..
-        } => {
-            if num_established.get() == 1 {
-                info!("Peer connected: {}", peer_id);
-            }
+        } if num_established.get() == 1 => {
+            info!("Peer connected: {}", peer_id);
         }
         SwarmEvent::ConnectionClosed {
             peer_id,
-            num_established,
+            num_established: 0,
             ..
         } => {
-            if num_established == 0 {
-                info!("Peer disconnected: {}", peer_id);
-            }
+            info!("Peer disconnected: {}", peer_id);
         }
         SwarmEvent::Behaviour(BootstrapBehaviourEvent::Identify(
             libp2p::identify::Event::Received { peer_id, info, .. },
