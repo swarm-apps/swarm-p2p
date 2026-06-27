@@ -3,7 +3,7 @@ use std::{fmt::Debug, num::NonZeroUsize};
 
 use libp2p::{
     StreamProtocol, autonat, dcutr, identify, identity::Keypair, kad, mdns, ping, relay,
-    request_response, swarm::NetworkBehaviour,
+    request_response, swarm::NetworkBehaviour, swarm::behaviour::toggle::Toggle,
 };
 use serde::{Deserialize, Serialize};
 
@@ -44,10 +44,10 @@ where
     pub identify: identify::Behaviour,
     pub kad: kad::Behaviour<kad::store::MemoryStore>,
     pub req_resp: request_response::cbor::Behaviour<Req, Resp>,
-    pub mdns: mdns::tokio::Behaviour,
-    pub relay_client: relay::client::Behaviour,
-    pub autonat: autonat::v2::client::Behaviour,
-    pub dcutr: dcutr::Behaviour,
+    pub mdns: Toggle<mdns::tokio::Behaviour>,
+    pub relay_client: Toggle<relay::client::Behaviour>,
+    pub autonat: Toggle<autonat::v2::client::Behaviour>,
+    pub dcutr: Toggle<dcutr::Behaviour>,
     pub stream: libp2p_stream::Behaviour,
 }
 
@@ -128,19 +128,33 @@ where
         // ===== mDNS =====
         // 局域网多播 DNS 发现
         // 自动发现同一局域网内的其他节点，无需引导节点
-        let mdns = mdns::tokio::Behaviour::new(mdns::Config::default(), peer_id)
-            .expect("mDNS initialization failed");
+        let mdns = Toggle::from(if config.enable_mdns {
+            Some(
+                mdns::tokio::Behaviour::new(mdns::Config::default(), peer_id)
+                    .expect("mDNS initialization failed"),
+            )
+        } else {
+            None
+        });
 
         // ===== AutoNAT v2 Client =====
         // 定期向已连接的 AutoNAT v2 Server（如引导节点）发送探测请求，
         // 让对方回拨自身地址以确认外部可达性。
         // 成功确认的地址会自动注册为 ExternalAddr。
-        let autonat = autonat::v2::client::Behaviour::default();
+        let autonat = Toggle::from(if config.enable_autonat {
+            Some(autonat::v2::client::Behaviour::default())
+        } else {
+            None
+        });
 
         // ===== DCUtR =====
         // Direct Connection Upgrade through Relay
         // 通过中继连接协调打洞，实现 NAT 穿透后的直连
-        let dcutr = dcutr::Behaviour::new(peer_id);
+        let dcutr = Toggle::from(if config.enable_dcutr {
+            Some(dcutr::Behaviour::new(peer_id))
+        } else {
+            None
+        });
 
         let req_resp = request_response::cbor::Behaviour::new(
             [(
@@ -161,7 +175,7 @@ where
             identify,
             kad,
             mdns,
-            relay_client,
+            relay_client: Toggle::from(config.enable_relay_client.then_some(relay_client)),
             autonat,
             dcutr,
             req_resp,

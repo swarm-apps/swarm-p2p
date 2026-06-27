@@ -167,6 +167,12 @@ impl NodeConfig {
         self
     }
 
+    /// 设置 data-channel 空闲超时。
+    pub fn with_data_channel_idle_timeout(mut self, timeout: Duration) -> Self {
+        self.data_channel_idle_timeout = timeout;
+        self
+    }
+
     /// 设置 data-channel 数量限制。
     pub fn with_data_channel_limits(mut self, limits: DataChannelLimits) -> Self {
         self.data_channel_limits = limits;
@@ -195,6 +201,10 @@ mod tests {
         assert_eq!(config.kad_query_timeout, Duration::from_secs(60));
         assert_eq!(config.req_resp_protocol, "/swarm-p2p/req/1.0.0");
         assert_eq!(config.req_resp_timeout, Duration::from_secs(120));
+        assert!(config.data_channel_protocols.is_empty());
+        assert_eq!(config.data_channel_open_timeout, Duration::from_secs(30));
+        assert_eq!(config.data_channel_idle_timeout, Duration::from_secs(300));
+        assert_eq!(config.data_channel_limits.max_inbound_per_peer, 4);
     }
 
     #[test]
@@ -209,13 +219,24 @@ mod tests {
     #[test]
     fn builder_chain() {
         let addr: Multiaddr = "/ip4/127.0.0.1/tcp/4001".parse().unwrap();
+        let data_protocol = StreamProtocol::new("/test/data/1");
+        let limits = DataChannelLimits {
+            max_inbound_per_peer: 1,
+            max_outbound_per_peer: 2,
+            max_per_protocol: 3,
+        };
         let config = NodeConfig::new("/test/1.0.0", "Test/1.0.0")
             .with_listen_addrs(vec![addr.clone()])
             .with_mdns(false)
             .with_relay_client(false)
             .with_dcutr(false)
             .with_autonat(false)
-            .with_req_resp_protocol("/test/req/1.0.0");
+            .with_req_resp_protocol("/test/req/1.0.0")
+            .with_req_resp_timeout(Duration::from_secs(7))
+            .with_data_channel_protocols(vec![data_protocol.clone()])
+            .with_data_channel_open_timeout(Duration::from_secs(8))
+            .with_data_channel_idle_timeout(Duration::from_secs(9))
+            .with_data_channel_limits(limits);
 
         assert_eq!(config.listen_addrs, vec![addr]);
         assert!(!config.enable_mdns);
@@ -223,6 +244,13 @@ mod tests {
         assert!(!config.enable_dcutr);
         assert!(!config.enable_autonat);
         assert_eq!(config.req_resp_protocol, "/test/req/1.0.0");
+        assert_eq!(config.req_resp_timeout, Duration::from_secs(7));
+        assert_eq!(config.data_channel_protocols, vec![data_protocol]);
+        assert_eq!(config.data_channel_open_timeout, Duration::from_secs(8));
+        assert_eq!(config.data_channel_idle_timeout, Duration::from_secs(9));
+        assert_eq!(config.data_channel_limits.max_inbound_per_peer, 1);
+        assert_eq!(config.data_channel_limits.max_outbound_per_peer, 2);
+        assert_eq!(config.data_channel_limits.max_per_protocol, 3);
     }
 
     #[test]

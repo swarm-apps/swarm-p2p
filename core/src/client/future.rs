@@ -73,3 +73,66 @@ where
         self.handle.cancel();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::task::Poll;
+
+    use async_trait::async_trait;
+    use serde::{Deserialize, Serialize};
+
+    use super::*;
+    use crate::command::{CoreSwarm, ResultHandle};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct TestMessage;
+
+    struct NeverCompletesCommand;
+
+    #[async_trait]
+    impl CommandHandler<TestMessage, TestMessage> for NeverCompletesCommand {
+        type Result = ();
+
+        async fn run(
+            &mut self,
+            _swarm: &mut CoreSwarm<TestMessage, TestMessage>,
+            _handle: &ResultHandle<Self::Result>,
+        ) {
+        }
+    }
+
+    #[tokio::test]
+    async fn first_poll_sends_command_and_drop_marks_it_cancelled() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let mut future = Box::pin(CommandFuture::<_, TestMessage, TestMessage>::new(
+            NeverCompletesCommand,
+            tx,
+        ));
+
+        assert!(matches!(futures::poll!(&mut future), Poll::Pending));
+        let command = rx
+            .recv()
+            .await
+            .expect("command should be sent on first poll");
+        assert!(!command.is_cancelled());
+
+        drop(future);
+
+        assert!(
+            command.is_cancelled(),
+            "dropping CommandFuture should mark active command as cancelled"
+        );
+    }
+
+    #[tokio::test]
+    async fn closed_command_channel_returns_behaviour_error() {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        drop(rx);
+
+        let err = CommandFuture::<_, TestMessage, TestMessage>::new(NeverCompletesCommand, tx)
+            .await
+            .expect_err("closed command channel should fail");
+
+        assert!(matches!(err, crate::error::Error::Behaviour(_)));
+    }
+}

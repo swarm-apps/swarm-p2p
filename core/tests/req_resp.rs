@@ -1,12 +1,13 @@
-//! 集成测试：双节点 mDNS 发现 + Request-Response
+//! 集成测试：双节点显式 dial + Request-Response
 //!
-//! 在同一进程内启动两个 libp2p 节点（仅 TCP + mDNS），
-//! 并行监听双方事件，验证：发现 → 连接 → Identify → 请求-响应。
+//! 在同一进程内启动两个 libp2p 节点（仅 TCP，关闭 mDNS），
+//! 验证：监听 → 显式连接 → 请求-响应。
 
 mod common;
 
 use common::*;
-use swarm_p2p_core::{NetClient, NodeEvent, start};
+use swarm_p2p_core::libp2p::PeerId;
+use swarm_p2p_core::{Error, NetClient, NetworkFailureKind, NodeEvent, RequestOptions, start};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
@@ -16,24 +17,23 @@ async fn dual_node_full_flow() {
     // ===== 启动两个节点 =====
     let keypair_a = swarm_p2p_core::libp2p::identity::Keypair::generate_ed25519();
     let keypair_b = swarm_p2p_core::libp2p::identity::Keypair::generate_ed25519();
+    let peer_a_id = PeerId::from_public_key(&keypair_a.public());
+    let peer_b_id = PeerId::from_public_key(&keypair_b.public());
 
-    let (client_a, events_a, _dc_a) =
-        start::<Ping, Pong>(keypair_a, test_config()).expect("failed to start node A");
-    let (client_b, events_b, _dc_b) =
-        start::<Ping, Pong>(keypair_b, test_config()).expect("failed to start node B");
+    let (client_a, mut events_a, _dc_a) =
+        start::<Ping, Pong>(keypair_a, explicit_dial_config()).expect("failed to start node A");
+    let (client_b, mut events_b, _dc_b) =
+        start::<Ping, Pong>(keypair_b, explicit_dial_config()).expect("failed to start node B");
+
+    let addr_a = wait_for_listen_addr(&mut events_a).await;
+    let addr_b = wait_for_listen_addr(&mut events_b).await;
+    connect_by_explicit_dial(&client_a, peer_a_id, addr_a, &client_b, peer_b_id, addr_b).await;
 
     // 用 channel 从 B 的事件监听 task 传回 inbound request 信息
     let (inbound_tx, mut inbound_rx) = mpsc::channel::<(u64, Ping)>(1);
 
     // ===== B 事件监听（后台 task，打印所有事件，处理 inbound request） =====
     let b_task = tokio::spawn(node_b_listener(events_b, client_b, inbound_tx));
-
-    // ===== A 事件监听：等待发现 + 连接 + Identify =====
-    let (a_discovered, peer_b_id, a_identified) = wait_for_connection(events_a).await;
-
-    assert!(a_discovered, "Node A should discover peers via mDNS");
-    assert!(a_identified, "Node A should receive IdentifyReceived");
-    let peer_b_id = peer_b_id.expect("Node A should connect to Node B");
 
     // ===== Request-Response =====
     let response = timeout(
@@ -60,6 +60,97 @@ async fn dual_node_full_flow() {
     eprintln!("[B] handled inbound request pending_id={pending_id}");
 
     b_task.abort(); // 测试完成，停止 B 的事件监听
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn send_response_returns_error_when_pending_id_is_missing() {
+    let keypair = swarm_p2p_core::libp2p::identity::Keypair::generate_ed25519();
+    let (client, events, _dc) =
+        start::<Ping, Pong>(keypair, explicit_dial_config()).expect("failed to start node");
+    let bg = tokio::spawn(event_printer(events, "single", None));
+
+    let err = client
+        .send_response(999, Pong { msg: "lost".into() })
+        .await
+        .expect_err("missing pending id should fail");
+
+    assert!(
+        matches!(err, Error::RequestResponse(_)),
+        "actual error: {err:?}"
+    );
+    bg.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn send_request_per_call_timeout_returns_typed_error() {
+    let keypair_a = swarm_p2p_core::libp2p::identity::Keypair::generate_ed25519();
+    let keypair_b = swarm_p2p_core::libp2p::identity::Keypair::generate_ed25519();
+    let peer_a_id = PeerId::from_public_key(&keypair_a.public());
+    let peer_b_id = PeerId::from_public_key(&keypair_b.public());
+
+    let (client_a, mut events_a, _dc_a) =
+        start::<Ping, Pong>(keypair_a, explicit_dial_config()).expect("failed to start node A");
+    let (client_b, mut events_b, _dc_b) =
+        start::<Ping, Pong>(keypair_b, explicit_dial_config()).expect("failed to start node B");
+
+    let addr_a = wait_for_listen_addr(&mut events_a).await;
+    let addr_b = wait_for_listen_addr(&mut events_b).await;
+    connect_by_explicit_dial(&client_a, peer_a_id, addr_a, &client_b, peer_b_id, addr_b).await;
+
+    let bg_a = tokio::spawn(event_printer(events_a, "timeout-A", None));
+    let bg_b = tokio::spawn(event_printer(events_b, "timeout-B", None));
+
+    let err = client_a
+        .send_request_with_options(
+            peer_b_id,
+            Ping { msg: "x".into() },
+            RequestOptions::new().with_timeout(std::time::Duration::from_millis(100)),
+        )
+        .await
+        .expect_err("request without response should time out");
+
+    assert!(
+        matches!(err, Error::Network(NetworkFailureKind::Timeout)),
+        "actual error: {err:?}"
+    );
+    bg_a.abort();
+    bg_b.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mdns_disabled_nodes_do_not_connect_without_explicit_dial() {
+    let keypair_a = swarm_p2p_core::libp2p::identity::Keypair::generate_ed25519();
+    let keypair_b = swarm_p2p_core::libp2p::identity::Keypair::generate_ed25519();
+    let peer_a_id = PeerId::from_public_key(&keypair_a.public());
+    let peer_b_id = PeerId::from_public_key(&keypair_b.public());
+
+    let (client_a, mut events_a, _dc_a) =
+        start::<Ping, Pong>(keypair_a, explicit_dial_config()).expect("failed to start node A");
+    let (client_b, mut events_b, _dc_b) =
+        start::<Ping, Pong>(keypair_b, explicit_dial_config()).expect("failed to start node B");
+
+    let _ = wait_for_listen_addr(&mut events_a).await;
+    let _ = wait_for_listen_addr(&mut events_b).await;
+    let a_events = tokio::spawn(event_printer(events_a, "A-no-mdns", None));
+    let b_events = tokio::spawn(event_printer(events_b, "B-no-mdns", None));
+
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    assert!(
+        !client_a
+            .is_connected(peer_b_id)
+            .await
+            .expect("is_connected should complete")
+    );
+    assert!(
+        !client_b
+            .is_connected(peer_a_id)
+            .await
+            .expect("is_connected should complete")
+    );
+
+    a_events.abort();
+    b_events.abort();
 }
 
 /// B 侧：打印所有事件，处理 inbound request

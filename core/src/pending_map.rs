@@ -8,6 +8,8 @@ use std::{
 use parking_lot::Mutex;
 use tokio::time;
 
+const DEFAULT_CLEANUP_INTERVAL: Duration = Duration::from_secs(10);
+
 struct PendingEntry<V> {
     value: V,
     created_at: Instant,
@@ -22,12 +24,14 @@ struct PendingEntry<V> {
 /// 可能不满足 `Sync` 约束。对于低竞争场景完全够用。
 pub struct PendingMap<K, V> {
     inner: Arc<Mutex<HashMap<K, PendingEntry<V>>>>,
+    ttl: Duration,
 }
 
 impl<K, V> Clone for PendingMap<K, V> {
     fn clone(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
+            ttl: self.ttl,
         }
     }
 }
@@ -38,22 +42,23 @@ where
     V: Send + 'static,
 {
     pub fn new(ttl: Duration) -> Self {
+        Self::with_cleanup_interval(ttl, DEFAULT_CLEANUP_INTERVAL)
+    }
+
+    fn with_cleanup_interval(ttl: Duration, cleanup_interval: Duration) -> Self {
         let map = Arc::new(Mutex::new(HashMap::new()));
         let map_clone = Arc::clone(&map);
 
         tokio::spawn(async move {
-            let mut interval = time::interval(Duration::from_secs(10));
+            let mut interval = time::interval(cleanup_interval);
 
             loop {
                 interval.tick().await;
-                let now = Instant::now();
-                map_clone
-                    .lock()
-                    .retain(|_, v: &mut PendingEntry<V>| now.duration_since(v.created_at) < ttl);
+                purge_expired_entries(&mut map_clone.lock(), ttl);
             }
         });
 
-        Self { inner: map }
+        Self { inner: map, ttl }
     }
 
     pub fn insert(&self, key: K, value: V) {
@@ -77,6 +82,18 @@ where
     pub fn is_empty(&self) -> bool {
         self.inner.lock().is_empty()
     }
+
+    /// 立即清理过期条目，返回被移除的数量。
+    pub fn purge_expired(&self) -> usize {
+        purge_expired_entries(&mut self.inner.lock(), self.ttl)
+    }
+}
+
+fn purge_expired_entries<K, V>(entries: &mut HashMap<K, PendingEntry<V>>, ttl: Duration) -> usize {
+    let before = entries.len();
+    let now = Instant::now();
+    entries.retain(|_, v| now.duration_since(v.created_at) < ttl);
+    before - entries.len()
 }
 
 #[cfg(test)]
@@ -114,17 +131,17 @@ mod tests {
 
     #[tokio::test]
     async fn ttl_expiry_cleans_up() {
-        // TTL = 1ms，后台清理任务的首次 tick 立即执行
-        // sleep 后让出执行权，清理任务会移除过期条目
-        let map = PendingMap::new(Duration::from_millis(1));
-        map.insert(1u64, "ephemeral");
+        let map = PendingMap::new(Duration::from_secs(60));
+        map.inner.lock().insert(
+            1u64,
+            PendingEntry {
+                value: "ephemeral",
+                created_at: Instant::now() - Duration::from_secs(61),
+            },
+        );
         assert_eq!(map.len(), 1);
 
-        // 等待超过 TTL，并让出执行权给清理任务
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        tokio::task::yield_now().await;
-
-        // 过期条目应被后台任务清理
+        assert_eq!(map.purge_expired(), 1);
         assert!(map.is_empty(), "expired entry should be cleaned up");
     }
 
@@ -138,5 +155,21 @@ mod tests {
 
         assert_eq!(map.len(), 1);
         assert_eq!(map.take(&1), Some("durable"));
+    }
+
+    #[tokio::test]
+    async fn background_cleanup_uses_configured_interval() {
+        let map = PendingMap::with_cleanup_interval(Duration::ZERO, Duration::from_millis(1));
+        map.insert(1u64, "ephemeral");
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !map.is_empty() {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("background cleanup should run within timeout");
+
+        assert!(map.is_empty());
     }
 }

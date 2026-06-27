@@ -96,6 +96,7 @@ where
         inbound_protocol_streams,
         dc_registry.clone(),
         inbound_dc_tx,
+        config.enable_relay_client,
     );
 
     // 启动监听

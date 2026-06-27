@@ -390,6 +390,41 @@ mod tests {
     }
 
     #[test]
+    fn registry_enforces_per_peer_outbound_limit() {
+        let limits = DataChannelLimits {
+            max_inbound_per_peer: 4,
+            max_outbound_per_peer: 1,
+            max_per_protocol: 64,
+        };
+        let reg = ChannelRegistry::new(limits);
+        let peer = test_peer();
+        let g1 = reg.try_acquire(peer, proto(), DataChannelDirection::Outbound);
+        let g2 = reg.try_acquire(peer, proto(), DataChannelDirection::Outbound);
+
+        assert!(g1.is_some());
+        assert!(g2.is_none(), "第二条出站通道应超出 per-peer 限制");
+    }
+
+    #[test]
+    fn registry_per_protocol_limit_is_shared_across_directions() {
+        let limits = DataChannelLimits {
+            max_inbound_per_peer: 10,
+            max_outbound_per_peer: 10,
+            max_per_protocol: 1,
+        };
+        let reg = ChannelRegistry::new(limits);
+        let peer = test_peer();
+        let inbound = reg.try_acquire(peer, proto(), DataChannelDirection::Inbound);
+        let outbound = reg.try_acquire(peer, proto(), DataChannelDirection::Outbound);
+
+        assert!(inbound.is_some());
+        assert!(
+            outbound.is_none(),
+            "per-protocol 限制应统计入站和出站总活跃数"
+        );
+    }
+
+    #[test]
     fn registry_inbound_and_outbound_counts_are_independent() {
         let limits = DataChannelLimits {
             max_inbound_per_peer: 1,
@@ -401,5 +436,40 @@ mod tests {
         let inb = reg.try_acquire(peer, proto(), DataChannelDirection::Inbound);
         let out = reg.try_acquire(peer, proto(), DataChannelDirection::Outbound);
         assert!(inb.is_some() && out.is_some(), "入站与出站计数应彼此独立");
+    }
+
+    #[test]
+    fn registry_drop_guard_removes_empty_counters() {
+        let reg = ChannelRegistry::new(DataChannelLimits::default());
+        let peer = test_peer();
+        let protocol = proto();
+        let guard = reg
+            .try_acquire(peer, protocol.clone(), DataChannelDirection::Inbound)
+            .expect("first acquire should succeed");
+
+        drop(guard);
+
+        let inner = reg.inner.lock();
+        assert!(!inner.inbound_per_peer.contains_key(&peer));
+        assert!(!inner.per_protocol.contains_key(&protocol));
+    }
+
+    #[test]
+    fn registry_zero_limit_rejects_immediately() {
+        let limits = DataChannelLimits {
+            max_inbound_per_peer: 0,
+            max_outbound_per_peer: 0,
+            max_per_protocol: 0,
+        };
+        let reg = ChannelRegistry::new(limits);
+
+        assert!(
+            reg.try_acquire(test_peer(), proto(), DataChannelDirection::Inbound)
+                .is_none()
+        );
+        assert!(
+            reg.try_acquire(test_peer(), proto(), DataChannelDirection::Outbound)
+                .is_none()
+        );
     }
 }

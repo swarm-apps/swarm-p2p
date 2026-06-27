@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use libp2p::PeerId;
+use libp2p::{Multiaddr, PeerId};
 use serde::{Deserialize, Serialize};
 use swarm_p2p_core::{NodeConfig, NodeEvent};
 use tokio::sync::oneshot;
@@ -31,8 +31,100 @@ pub fn test_config() -> NodeConfig {
         .with_kad_server_mode(true)
 }
 
+/// 创建不依赖 mDNS 的测试配置。集成测试优先用它，避免并行测试互相发现。
+#[allow(dead_code)]
+pub fn explicit_dial_config() -> NodeConfig {
+    NodeConfig::new("/test/1.0.0", "test/1.0.0")
+        .with_listen_addrs(vec!["/ip4/127.0.0.1/tcp/0".parse().unwrap()])
+        .with_mdns(false)
+        .with_relay_client(false)
+        .with_dcutr(false)
+        .with_autonat(false)
+        .with_kad_server_mode(true)
+}
+
 #[allow(dead_code)]
 pub const TIMEOUT: Duration = Duration::from_secs(15);
+
+#[allow(dead_code)]
+pub async fn wait_for_listen_addr(events: &mut swarm_p2p_core::EventReceiver<Ping>) -> Multiaddr {
+    timeout(TIMEOUT, async {
+        loop {
+            match events.recv().await {
+                Some(NodeEvent::Listening { addr }) => return addr,
+                Some(_) => continue,
+                None => panic!("event stream closed before Listening"),
+            }
+        }
+    })
+    .await
+    .expect("node should start listening within timeout")
+}
+
+#[allow(dead_code)]
+pub async fn connect_by_explicit_dial(
+    client_a: &swarm_p2p_core::NetClient<Ping, Pong>,
+    peer_a: PeerId,
+    addr_a: Multiaddr,
+    client_b: &swarm_p2p_core::NetClient<Ping, Pong>,
+    peer_b: PeerId,
+    addr_b: Multiaddr,
+) {
+    client_a
+        .add_peer_addrs(peer_b, vec![addr_b.clone()])
+        .await
+        .expect("A should register B address");
+    client_b
+        .add_peer_addrs(peer_a, vec![addr_a.clone()])
+        .await
+        .expect("B should register A address");
+
+    let connect_a = retry_dial_until_connected(client_a, peer_b, addr_b);
+    let observe_b = wait_until_connected(client_b, peer_a);
+    tokio::join!(connect_a, observe_b);
+}
+
+#[allow(dead_code)]
+pub async fn retry_dial_until_connected(
+    client: &swarm_p2p_core::NetClient<Ping, Pong>,
+    peer: PeerId,
+    addr: Multiaddr,
+) {
+    timeout(TIMEOUT, async {
+        loop {
+            if client
+                .is_connected(peer)
+                .await
+                .expect("is_connected command should complete")
+            {
+                return;
+            }
+            let _ = client.add_peer_addrs(peer, vec![addr.clone()]).await;
+            let _ = client.dial(peer).await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("explicit dial should connect within timeout");
+}
+
+#[allow(dead_code)]
+pub async fn wait_until_connected(client: &swarm_p2p_core::NetClient<Ping, Pong>, peer: PeerId) {
+    timeout(TIMEOUT, async {
+        loop {
+            if client
+                .is_connected(peer)
+                .await
+                .expect("is_connected command should complete")
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("peer should observe incoming connection within timeout");
+}
 
 /// A 侧：等待 mDNS 发现 + PeerConnected + IdentifyReceived
 #[allow(dead_code)]

@@ -37,6 +37,8 @@ where
     /// Bootstrap 节点地址映射（peer_id → 地址列表），
     /// 用于在连接建立后申请 relay reservation
     bootstrap_peers: HashMap<libp2p::PeerId, Vec<libp2p::Multiaddr>>,
+    /// 是否在连接 bootstrap 后申请 relay reservation。
+    enable_relay_client: bool,
     /// 入站数据通道流（多协议合并），在 `select!` 中持续 poll；
     /// 空集合时该分支被守卫跳过，不会 busy-loop。
     inbound_channels: SelectAll<BoxStream<'static, (StreamProtocol, PeerId, Stream)>>,
@@ -64,6 +66,7 @@ where
         inbound_protocol_streams: Vec<(StreamProtocol, IncomingStreams)>,
         dc_registry: ChannelRegistry,
         inbound_dc_tx: mpsc::Sender<InboundDataChannel>,
+        enable_relay_client: bool,
     ) -> Self {
         // 把每个协议的入站流贴上 protocol 标签后合并，统一在 select! 中 poll。
         let inbound_channels =
@@ -83,6 +86,7 @@ where
             pending_channels,
             pending_id_counter: AtomicU64::new(0),
             bootstrap_peers: HashMap::new(),
+            enable_relay_client,
             inbound_channels,
             dc_registry,
             inbound_dc_tx,
@@ -113,11 +117,12 @@ where
                 info!("Dialing bootstrap peer {} at {}", peer_id, addr);
             }
 
-            // 记录 bootstrap 节点地址，等连接建立后再申请 relay reservation
-            self.bootstrap_peers
-                .entry(*peer_id)
-                .or_default()
-                .push(addr.clone());
+            if self.enable_relay_client {
+                self.bootstrap_peers
+                    .entry(*peer_id)
+                    .or_default()
+                    .push(addr.clone());
+            }
         }
     }
 
