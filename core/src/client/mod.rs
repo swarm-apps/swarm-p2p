@@ -11,9 +11,10 @@ use tokio::sync::mpsc;
 
 use crate::Result;
 use crate::command::{
-    AddPeerAddrsCommand, Command, DialCommand, DisconnectCommand, GetListenAddrsCommand,
-    IsConnectedCommand,
+    AddInfrastructurePeerCommand, AddPeerAddrsCommand, Command, DialCommand, DisconnectCommand,
+    GetListenAddrsCommand, IsConnectedCommand,
 };
+use crate::config::InfrastructureRoles;
 use crate::data_channel::{ChannelRegistry, DataChannel};
 use crate::event::NodeEvent;
 use crate::pending_map::PendingMap;
@@ -101,6 +102,17 @@ where
     /// 将指定 peer 的地址注册到 Swarm 地址簿。
     pub async fn add_peer_addrs(&self, peer_id: PeerId, addrs: Vec<Multiaddr>) -> Result<()> {
         let cmd = AddPeerAddrsCommand::new(peer_id, addrs);
+        CommandFuture::new(cmd, self.command_tx.clone()).await
+    }
+
+    /// 注册运行时发现的基础设施 peer，并按角色触发 Kad/Relay 接线。
+    pub async fn add_infrastructure_peer(
+        &self,
+        peer_id: PeerId,
+        addrs: Vec<Multiaddr>,
+        roles: InfrastructureRoles,
+    ) -> Result<()> {
+        let cmd = AddInfrastructurePeerCommand::new(peer_id, addrs, roles);
         CommandFuture::new(cmd, self.command_tx.clone()).await
     }
 

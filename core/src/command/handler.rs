@@ -114,9 +114,17 @@ where
     async fn on_event(
         &mut self,
         event: SwarmEvent<CoreBehaviourEvent<Req, Resp>>,
+        _swarm: &mut CoreSwarm<Req, Resp>,
         _handle: &ResultHandle<Self::Result>,
     ) -> OnEventResult<Req, Resp> {
         (false, Some(event))
+    }
+
+    /// 命令执行后希望 event loop 在 peer 连接建立时申请 relay reservation。
+    fn take_relay_reservation_request(
+        &mut self,
+    ) -> Option<(libp2p::PeerId, Vec<libp2p::Multiaddr>)> {
+        None
     }
 }
 
@@ -134,7 +142,12 @@ where
     async fn on_event_boxed(
         &mut self,
         event: SwarmEvent<CoreBehaviourEvent<Req, Resp>>,
+        swarm: &mut CoreSwarm<Req, Resp>,
     ) -> OnEventResult<Req, Resp>;
+    /// 命令执行后取出延迟 relay reservation 请求。
+    fn take_relay_reservation_request(
+        &mut self,
+    ) -> Option<(libp2p::PeerId, Vec<libp2p::Multiaddr>)>;
     /// 调用方 future 是否已 drop / 取消。
     fn is_cancelled(&self) -> bool;
 }
@@ -181,8 +194,15 @@ where
     async fn on_event_boxed(
         &mut self,
         event: SwarmEvent<CoreBehaviourEvent<Req, Resp>>,
+        swarm: &mut CoreSwarm<Req, Resp>,
     ) -> OnEventResult<Req, Resp> {
-        self.handler.on_event(event, &self.handle).await
+        self.handler.on_event(event, swarm, &self.handle).await
+    }
+
+    fn take_relay_reservation_request(
+        &mut self,
+    ) -> Option<(libp2p::PeerId, Vec<libp2p::Multiaddr>)> {
+        self.handler.take_relay_reservation_request()
     }
 
     fn is_cancelled(&self) -> bool {

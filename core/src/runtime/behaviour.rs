@@ -7,7 +7,7 @@ use libp2p::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::config::NodeConfig;
+use crate::config::{InfrastructureMode, LanHelperConfig, NodeConfig, RelayLimits};
 
 /// CBOR 编码消息的 trait 约束
 ///
@@ -46,6 +46,7 @@ where
     pub req_resp: request_response::cbor::Behaviour<Req, Resp>,
     pub mdns: Toggle<mdns::tokio::Behaviour>,
     pub relay_client: Toggle<relay::client::Behaviour>,
+    pub relay_server: Toggle<relay::Behaviour>,
     pub autonat: Toggle<autonat::v2::client::Behaviour>,
     pub dcutr: Toggle<dcutr::Behaviour>,
     pub stream: libp2p_stream::Behaviour,
@@ -121,7 +122,13 @@ where
         // 若 AutoNAT 未确认或处于 NAT 后，节点会停留在 Client 模式，
         // 不响应 DHT 查询，导致 put_record 等操作因 QuorumFailed 失败。
         // 在已知可达的场景（如测试、引导节点）可强制设为 Server。
-        if config.kad_server_mode {
+        let lan_helper = match config.infrastructure_mode {
+            InfrastructureMode::LanHelper(config) => Some(config),
+            InfrastructureMode::Off => None,
+        };
+        let kad_server_mode =
+            config.kad_server_mode || lan_helper.is_some_and(|c| c.enable_kad_server);
+        if kad_server_mode {
             kad.set_mode(Some(kad::Mode::Server));
         }
 
@@ -156,6 +163,13 @@ where
             None
         });
 
+        // ===== Relay Server =====
+        // relay::Behaviour 是服务端；relay::client::Behaviour 是客户端。
+        // LAN Helper 可以同时作为 relay client 和 relay server，但两个语义必须分开。
+        let relay_server = Toggle::from(
+            lan_helper.map(|helper| relay::Behaviour::new(peer_id, relay_config(helper))),
+        );
+
         let req_resp = request_response::cbor::Behaviour::new(
             [(
                 StreamProtocol::try_from_owned(config.req_resp_protocol.clone())
@@ -176,10 +190,34 @@ where
             kad,
             mdns,
             relay_client: Toggle::from(config.enable_relay_client.then_some(relay_client)),
+            relay_server,
             autonat,
             dcutr,
             req_resp,
             stream,
         }
+    }
+}
+
+fn relay_config(helper: LanHelperConfig) -> relay::Config {
+    let RelayLimits {
+        max_reservations,
+        max_reservations_per_peer,
+        reservation_duration,
+        max_circuits,
+        max_circuits_per_peer,
+        max_circuit_duration,
+        max_circuit_bytes,
+    } = helper.relay_limits;
+
+    relay::Config {
+        max_reservations,
+        max_reservations_per_peer,
+        reservation_duration,
+        max_circuits,
+        max_circuits_per_peer,
+        max_circuit_duration,
+        max_circuit_bytes,
+        ..Default::default()
     }
 }

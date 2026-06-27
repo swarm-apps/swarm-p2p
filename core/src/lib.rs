@@ -10,7 +10,9 @@ pub mod runtime;
 pub mod util;
 
 pub use client::{EventReceiver, NetClient};
-pub use config::NodeConfig;
+pub use config::{
+    InfrastructureMode, InfrastructureRoles, LanHelperConfig, NodeConfig, RelayLimits,
+};
 pub use data_channel::{
     DataChannel, DataChannelCloseReason, DataChannelDirection, DataChannelId, DataChannelLimits,
     DataChannelProtocolConfig, DataChannelReceiver, InboundDataChannel,

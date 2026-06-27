@@ -1,3 +1,4 @@
+mod add_infrastructure_peer;
 mod add_peer_addrs;
 mod dial;
 mod disconnect;
@@ -7,6 +8,7 @@ mod is_connected;
 mod kad;
 mod req_resp;
 
+pub use add_infrastructure_peer::*;
 pub use add_peer_addrs::*;
 pub use dial::*;
 pub use disconnect::*;

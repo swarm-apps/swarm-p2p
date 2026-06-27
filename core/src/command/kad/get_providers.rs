@@ -53,6 +53,7 @@ impl<Req: CborMessage, Resp: CborMessage> CommandHandler<Req, Resp> for GetProvi
     async fn on_event(
         &mut self,
         event: SwarmEvent<CoreBehaviourEvent<Req, Resp>>,
+        _swarm: &mut CoreSwarm<Req, Resp>,
         handle: &ResultHandle<Self::Result>,
     ) -> OnEventResult<Req, Resp> {
         match event {

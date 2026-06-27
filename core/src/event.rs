@@ -42,6 +42,8 @@ pub enum NodeEvent<Req = ()> {
         peer_id: PeerId,
         agent_version: String,
         protocol_version: String,
+        listen_addrs: Vec<Multiaddr>,
+        protocols: Vec<String>,
     },
 
     /// Ping 成功，返回延迟
@@ -79,6 +81,47 @@ pub enum NodeEvent<Req = ()> {
         relay_peer_id: PeerId,
         /// 是否为续约（而非首次预约）
         renewal: bool,
+    },
+
+    /// 本节点作为 Relay Server 接受了 reservation。
+    #[serde(rename_all = "camelCase")]
+    RelayServerReservationAccepted { src_peer_id: PeerId, renewed: bool },
+
+    /// 本节点作为 Relay Server 拒绝了 reservation。
+    #[serde(rename_all = "camelCase")]
+    RelayServerReservationDenied { src_peer_id: PeerId, status: String },
+
+    /// 本节点作为 Relay Server 的 reservation 关闭或过期。
+    #[serde(rename_all = "camelCase")]
+    RelayServerReservationClosed { src_peer_id: PeerId },
+
+    /// 本节点作为 Relay Server 接受了 circuit。
+    #[serde(rename_all = "camelCase")]
+    RelayServerCircuitAccepted {
+        src_peer_id: PeerId,
+        dst_peer_id: PeerId,
+    },
+
+    /// 本节点作为 Relay Server 拒绝了 circuit。
+    #[serde(rename_all = "camelCase")]
+    RelayServerCircuitDenied {
+        src_peer_id: PeerId,
+        dst_peer_id: PeerId,
+        status: String,
+    },
+
+    /// 本节点作为 Relay Server 的 circuit 已关闭。
+    #[serde(rename_all = "camelCase")]
+    RelayServerCircuitClosed {
+        src_peer_id: PeerId,
+        dst_peer_id: PeerId,
+    },
+
+    /// LAN Helper 可公告地址状态变化。
+    #[serde(rename_all = "camelCase")]
+    LanHelperStatusChanged {
+        relay_server_enabled: bool,
+        advertised_addrs: Vec<Multiaddr>,
     },
 
     /// 收到对端的 request-response 请求

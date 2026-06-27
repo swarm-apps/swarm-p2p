@@ -12,6 +12,7 @@ use tracing::{debug, info, warn};
 
 use super::{CborMessage, CoreBehaviourEvent};
 use crate::command::{Command, CoreSwarm};
+use crate::config::{InfrastructureMode, LanHelperConfig};
 use crate::data_channel::{
     ChannelRegistry, DataChannel, DataChannelDirection, DataChannelId, InboundDataChannel,
 };
@@ -39,6 +40,10 @@ where
     bootstrap_peers: HashMap<libp2p::PeerId, Vec<libp2p::Multiaddr>>,
     /// 是否在连接 bootstrap 后申请 relay reservation。
     enable_relay_client: bool,
+    /// LAN Helper 配置；为空表示普通客户端模式。
+    lan_helper: Option<LanHelperConfig>,
+    /// 已注册为 external address 的 LAN Helper 地址。
+    advertised_lan_addrs: Vec<libp2p::Multiaddr>,
     /// 入站数据通道流（多协议合并），在 `select!` 中持续 poll；
     /// 空集合时该分支被守卫跳过，不会 busy-loop。
     inbound_channels: SelectAll<BoxStream<'static, (StreamProtocol, PeerId, Stream)>>,
@@ -67,6 +72,7 @@ where
         dc_registry: ChannelRegistry,
         inbound_dc_tx: mpsc::Sender<InboundDataChannel>,
         enable_relay_client: bool,
+        infrastructure_mode: InfrastructureMode,
     ) -> Self {
         // 把每个协议的入站流贴上 protocol 标签后合并，统一在 select! 中 poll。
         let inbound_channels =
@@ -87,6 +93,11 @@ where
             pending_id_counter: AtomicU64::new(0),
             bootstrap_peers: HashMap::new(),
             enable_relay_client,
+            lan_helper: match infrastructure_mode {
+                InfrastructureMode::LanHelper(config) => Some(config),
+                InfrastructureMode::Off => None,
+            },
+            advertised_lan_addrs: Vec::new(),
             inbound_channels,
             dc_registry,
             inbound_dc_tx,
@@ -194,6 +205,16 @@ where
 
     async fn handle_command(&mut self, mut cmd: Command<Req, Resp>) {
         cmd.run_boxed(&mut self.swarm).await;
+        if let Some((peer_id, addrs)) = cmd.take_relay_reservation_request() {
+            if self.swarm.is_connected(&peer_id) {
+                self.request_relay_reservations(peer_id, addrs);
+            } else {
+                self.bootstrap_peers
+                    .entry(peer_id)
+                    .or_default()
+                    .extend(addrs);
+            }
+        }
         self.active_commands.push(cmd);
     }
 
@@ -205,7 +226,9 @@ where
             let Some(event) = remaining.take() else {
                 break; // 事件已被消费，后续命令不再处理
             };
-            let (keep, returned) = self.active_commands[i].on_event_boxed(event).await;
+            let (keep, returned) = self.active_commands[i]
+                .on_event_boxed(event, &mut self.swarm)
+                .await;
             remaining = returned;
             if keep {
                 i += 1;
@@ -261,7 +284,11 @@ where
                     None
                 }
             },
+            SwarmEvent::Behaviour(CoreBehaviourEvent::RelayServer(e)) => {
+                self.convert_relay_server_event(e)
+            }
             SwarmEvent::NewListenAddr { address, .. } => {
+                self.maybe_announce_lan_helper_addr(&address);
                 Some(NodeEvent::Listening { addr: address })
             }
             // 只在第一个连接建立时通知（peer 级别聚合）
@@ -269,29 +296,7 @@ where
                 peer_id,
                 num_established,
                 ..
-            } if num_established.get() == 1 => {
-                // 如果是 bootstrap 节点，连接建立后申请 relay reservation
-                if let Some(addrs) = self.bootstrap_peers.remove(&peer_id) {
-                    for addr in addrs {
-                        let base = if addr
-                            .iter()
-                            .any(|p| matches!(p, libp2p::multiaddr::Protocol::P2p(_)))
-                        {
-                            addr.clone()
-                        } else {
-                            addr.clone().with(libp2p::multiaddr::Protocol::P2p(peer_id))
-                        };
-                        let relay_addr = base.with(libp2p::multiaddr::Protocol::P2pCircuit);
-                        match self.swarm.listen_on(relay_addr.clone()) {
-                            Ok(_) => info!("Requesting relay reservation via {}", relay_addr),
-                            Err(e) => {
-                                warn!("Failed to listen on relay circuit {}: {}", relay_addr, e)
-                            }
-                        }
-                    }
-                }
-                Some(NodeEvent::PeerConnected { peer_id })
-            }
+            } if num_established.get() == 1 => Some(NodeEvent::PeerConnected { peer_id }),
             SwarmEvent::ConnectionEstablished { .. } => None,
             // 只在最后一个连接关闭时通知（peer 级别聚合）
             SwarmEvent::ConnectionClosed {
@@ -383,6 +388,9 @@ where
                         "Added peer {} to Kad + Swarm (protocol: {})",
                         peer_id, info.protocol_version
                     );
+                    if let Some(addrs) = self.bootstrap_peers.remove(&peer_id) {
+                        self.request_relay_reservations(peer_id, addrs);
+                    }
                 } else {
                     debug!(
                         "Peer {} protocol mismatch: expected {}, got {}",
@@ -393,6 +401,8 @@ where
                     peer_id,
                     agent_version: info.agent_version,
                     protocol_version: info.protocol_version,
+                    listen_addrs: info.listen_addrs,
+                    protocols: info.protocols.into_iter().map(|p| p.to_string()).collect(),
                 })
             }
             // AutoNAT: 仅在探测成功时上报 Public 状态。
@@ -468,5 +478,178 @@ where
             }
             _ => None,
         }
+    }
+
+    fn convert_relay_server_event(&self, event: libp2p::relay::Event) -> Option<NodeEvent<Req>> {
+        match event {
+            libp2p::relay::Event::ReservationReqAccepted {
+                src_peer_id,
+                renewed,
+            } => {
+                info!(
+                    "Relay server accepted reservation from {} (renewed={})",
+                    src_peer_id, renewed
+                );
+                Some(NodeEvent::RelayServerReservationAccepted {
+                    src_peer_id,
+                    renewed,
+                })
+            }
+            libp2p::relay::Event::ReservationReqDenied {
+                src_peer_id,
+                status,
+            } => {
+                warn!(
+                    "Relay server denied reservation from {}: {:?}",
+                    src_peer_id, status
+                );
+                Some(NodeEvent::RelayServerReservationDenied {
+                    src_peer_id,
+                    status: format!("{status:?}"),
+                })
+            }
+            libp2p::relay::Event::ReservationClosed { src_peer_id }
+            | libp2p::relay::Event::ReservationTimedOut { src_peer_id } => {
+                info!("Relay server reservation closed for {}", src_peer_id);
+                Some(NodeEvent::RelayServerReservationClosed { src_peer_id })
+            }
+            libp2p::relay::Event::CircuitReqAccepted {
+                src_peer_id,
+                dst_peer_id,
+            } => {
+                info!(
+                    "Relay server accepted circuit {} -> {}",
+                    src_peer_id, dst_peer_id
+                );
+                Some(NodeEvent::RelayServerCircuitAccepted {
+                    src_peer_id,
+                    dst_peer_id,
+                })
+            }
+            libp2p::relay::Event::CircuitReqDenied {
+                src_peer_id,
+                dst_peer_id,
+                status,
+            } => {
+                warn!(
+                    "Relay server denied circuit {} -> {}: {:?}",
+                    src_peer_id, dst_peer_id, status
+                );
+                Some(NodeEvent::RelayServerCircuitDenied {
+                    src_peer_id,
+                    dst_peer_id,
+                    status: format!("{status:?}"),
+                })
+            }
+            libp2p::relay::Event::CircuitClosed {
+                src_peer_id,
+                dst_peer_id,
+                ..
+            } => {
+                info!(
+                    "Relay server circuit closed {} -> {}",
+                    src_peer_id, dst_peer_id
+                );
+                Some(NodeEvent::RelayServerCircuitClosed {
+                    src_peer_id,
+                    dst_peer_id,
+                })
+            }
+            #[allow(deprecated)]
+            libp2p::relay::Event::ReservationReqAcceptFailed { .. }
+            | libp2p::relay::Event::ReservationReqDenyFailed { .. }
+            | libp2p::relay::Event::CircuitReqDenyFailed { .. }
+            | libp2p::relay::Event::CircuitReqOutboundConnectFailed { .. }
+            | libp2p::relay::Event::CircuitReqAcceptFailed { .. } => {
+                debug!("Relay server transient failure: {:?}", event);
+                None
+            }
+        }
+    }
+
+    fn maybe_announce_lan_helper_addr(&mut self, addr: &libp2p::Multiaddr) {
+        let Some(config) = self.lan_helper else {
+            return;
+        };
+        if !config.announce_private_addrs {
+            return;
+        }
+
+        if is_usable_lan_addr(addr) {
+            if !self.advertised_lan_addrs.contains(addr) {
+                self.swarm.add_external_address(addr.clone());
+                self.advertised_lan_addrs.push(addr.clone());
+                info!("LAN Helper advertised address: {}", addr);
+            }
+        } else {
+            debug!("LAN Helper ignored non-routable listen address: {}", addr);
+        }
+
+        let event = NodeEvent::LanHelperStatusChanged {
+            relay_server_enabled: self.swarm.behaviour().relay_server.is_enabled(),
+            advertised_addrs: self.advertised_lan_addrs.clone(),
+        };
+        if let Err(e) = self.event_tx.try_send(event) {
+            debug!("LAN Helper status event dropped: {}", e);
+        }
+    }
+
+    fn request_relay_reservations(
+        &mut self,
+        peer_id: libp2p::PeerId,
+        addrs: Vec<libp2p::Multiaddr>,
+    ) {
+        for addr in addrs {
+            let base = if addr
+                .iter()
+                .any(|p| matches!(p, libp2p::multiaddr::Protocol::P2p(_)))
+            {
+                addr.clone()
+            } else {
+                addr.clone().with(libp2p::multiaddr::Protocol::P2p(peer_id))
+            };
+            let relay_addr = base.with(libp2p::multiaddr::Protocol::P2pCircuit);
+            match self.swarm.listen_on(relay_addr.clone()) {
+                Ok(_) => info!("Requesting relay reservation via {}", relay_addr),
+                Err(e) => warn!("Failed to listen on relay circuit {}: {}", relay_addr, e),
+            }
+        }
+    }
+}
+
+fn is_usable_lan_addr(addr: &libp2p::Multiaddr) -> bool {
+    addr.iter().any(|protocol| match protocol {
+        libp2p::multiaddr::Protocol::Ip4(ip) => {
+            ip.is_private() && !ip.is_loopback() && !ip.is_link_local() && !ip.is_unspecified()
+        }
+        libp2p::multiaddr::Protocol::Ip6(ip) => {
+            (ip.segments()[0] & 0xfe00) == 0xfc00 && !ip.is_loopback() && !ip.is_unspecified()
+        }
+        _ => false,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_usable_lan_addr;
+    use libp2p::Multiaddr;
+
+    #[test]
+    fn usable_lan_addr_filters_non_routable_addresses() {
+        let private: Multiaddr = "/ip4/192.168.1.10/tcp/4001".parse().unwrap();
+        let wildcard: Multiaddr = "/ip4/0.0.0.0/tcp/4001".parse().unwrap();
+        let loopback: Multiaddr = "/ip4/127.0.0.1/tcp/4001".parse().unwrap();
+        let link_local: Multiaddr = "/ip4/169.254.1.1/tcp/4001".parse().unwrap();
+        let public: Multiaddr = "/ip4/8.8.8.8/tcp/4001".parse().unwrap();
+        let unique_local: Multiaddr = "/ip6/fd00::1/tcp/4001".parse().unwrap();
+        let ipv6_loopback: Multiaddr = "/ip6/::1/tcp/4001".parse().unwrap();
+
+        assert!(is_usable_lan_addr(&private));
+        assert!(is_usable_lan_addr(&unique_local));
+        assert!(!is_usable_lan_addr(&wildcard));
+        assert!(!is_usable_lan_addr(&loopback));
+        assert!(!is_usable_lan_addr(&link_local));
+        assert!(!is_usable_lan_addr(&public));
+        assert!(!is_usable_lan_addr(&ipv6_loopback));
     }
 }

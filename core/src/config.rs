@@ -4,6 +4,93 @@ use libp2p::{Multiaddr, PeerId, StreamProtocol};
 
 use crate::data_channel::DataChannelLimits;
 
+/// Relay Server 资源限额。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RelayLimits {
+    pub max_reservations: usize,
+    pub max_reservations_per_peer: usize,
+    pub reservation_duration: Duration,
+    pub max_circuits: usize,
+    pub max_circuits_per_peer: usize,
+    pub max_circuit_duration: Duration,
+    pub max_circuit_bytes: u64,
+}
+
+impl Default for RelayLimits {
+    fn default() -> Self {
+        Self {
+            max_reservations: 16,
+            max_reservations_per_peer: 2,
+            reservation_duration: Duration::from_secs(30 * 60),
+            max_circuits: 8,
+            max_circuits_per_peer: 2,
+            max_circuit_duration: Duration::from_secs(30 * 60),
+            max_circuit_bytes: 64 * 1024 * 1024,
+        }
+    }
+}
+
+/// 本节点是否提供基础设施能力。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum InfrastructureMode {
+    /// 普通客户端，不提供 Kad/Relay 服务端能力。
+    #[default]
+    Off,
+    /// 局域网协助节点：为同网段设备提供受限 Kad Server + Relay Server。
+    LanHelper(LanHelperConfig),
+}
+
+/// 局域网协助节点配置。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LanHelperConfig {
+    /// 是否强制 Kad 以 Server 模式运行。
+    pub enable_kad_server: bool,
+    /// Relay Server 资源限额。
+    pub relay_limits: RelayLimits,
+    /// 是否把可用私有 LAN 地址注册为可公告地址，供 relay reservation 返回。
+    pub announce_private_addrs: bool,
+}
+
+impl Default for LanHelperConfig {
+    fn default() -> Self {
+        Self {
+            enable_kad_server: true,
+            relay_limits: RelayLimits::default(),
+            announce_private_addrs: true,
+        }
+    }
+}
+
+/// infrastructure peer 的能力角色。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct InfrastructureRoles {
+    pub kad_server: bool,
+    pub relay_server: bool,
+}
+
+impl InfrastructureRoles {
+    pub fn kad_server() -> Self {
+        Self {
+            kad_server: true,
+            relay_server: false,
+        }
+    }
+
+    pub fn relay_server() -> Self {
+        Self {
+            kad_server: false,
+            relay_server: true,
+        }
+    }
+
+    pub fn kad_and_relay() -> Self {
+        Self {
+            kad_server: true,
+            relay_server: true,
+        }
+    }
+}
+
 /// 节点配置
 #[derive(Debug, Clone)]
 pub struct NodeConfig {
@@ -49,6 +136,9 @@ pub struct NodeConfig {
     /// 设为 `true` 后节点始终响应 DHT 查询，适用于确认公网可达或测试场景。
     pub kad_server_mode: bool,
 
+    /// 本节点提供的基础设施能力。
+    pub infrastructure_mode: InfrastructureMode,
+
     /// Request-Response 协议名称（如 "/myapp/req/1.0.0"）
     pub req_resp_protocol: String,
 
@@ -91,6 +181,7 @@ impl Default for NodeConfig {
             ping_timeout: Duration::from_secs(10),
             kad_query_timeout: Duration::from_secs(60),
             kad_server_mode: false,
+            infrastructure_mode: InfrastructureMode::Off,
             req_resp_protocol: "/swarm-p2p/req/1.0.0".into(),
             req_resp_timeout: Duration::from_secs(120),
             data_channel_protocols: vec![],
@@ -142,6 +233,16 @@ impl NodeConfig {
 
     pub fn with_kad_server_mode(mut self, enable: bool) -> Self {
         self.kad_server_mode = enable;
+        self
+    }
+
+    pub fn with_infrastructure_mode(mut self, mode: InfrastructureMode) -> Self {
+        self.infrastructure_mode = mode;
+        self
+    }
+
+    pub fn with_lan_helper(mut self, config: LanHelperConfig) -> Self {
+        self.infrastructure_mode = InfrastructureMode::LanHelper(config);
         self
     }
 
@@ -199,6 +300,8 @@ mod tests {
         assert_eq!(config.ping_interval, Duration::from_secs(15));
         assert_eq!(config.ping_timeout, Duration::from_secs(10));
         assert_eq!(config.kad_query_timeout, Duration::from_secs(60));
+        assert!(!config.kad_server_mode);
+        assert_eq!(config.infrastructure_mode, InfrastructureMode::Off);
         assert_eq!(config.req_resp_protocol, "/swarm-p2p/req/1.0.0");
         assert_eq!(config.req_resp_timeout, Duration::from_secs(120));
         assert!(config.data_channel_protocols.is_empty());
@@ -225,12 +328,26 @@ mod tests {
             max_outbound_per_peer: 2,
             max_per_protocol: 3,
         };
+        let lan_helper = LanHelperConfig {
+            enable_kad_server: false,
+            relay_limits: RelayLimits {
+                max_reservations: 4,
+                max_reservations_per_peer: 1,
+                reservation_duration: Duration::from_secs(60),
+                max_circuits: 2,
+                max_circuits_per_peer: 1,
+                max_circuit_duration: Duration::from_secs(120),
+                max_circuit_bytes: 1024,
+            },
+            announce_private_addrs: false,
+        };
         let config = NodeConfig::new("/test/1.0.0", "Test/1.0.0")
             .with_listen_addrs(vec![addr.clone()])
             .with_mdns(false)
             .with_relay_client(false)
             .with_dcutr(false)
             .with_autonat(false)
+            .with_lan_helper(lan_helper)
             .with_req_resp_protocol("/test/req/1.0.0")
             .with_req_resp_timeout(Duration::from_secs(7))
             .with_data_channel_protocols(vec![data_protocol.clone()])
@@ -243,6 +360,10 @@ mod tests {
         assert!(!config.enable_relay_client);
         assert!(!config.enable_dcutr);
         assert!(!config.enable_autonat);
+        assert_eq!(
+            config.infrastructure_mode,
+            InfrastructureMode::LanHelper(lan_helper)
+        );
         assert_eq!(config.req_resp_protocol, "/test/req/1.0.0");
         assert_eq!(config.req_resp_timeout, Duration::from_secs(7));
         assert_eq!(config.data_channel_protocols, vec![data_protocol]);
@@ -260,5 +381,43 @@ mod tests {
         config2.enable_mdns = false;
         assert!(config.enable_mdns);
         assert!(!config2.enable_mdns);
+    }
+
+    #[test]
+    fn lan_helper_defaults_are_conservative() {
+        let config = LanHelperConfig::default();
+
+        assert!(config.enable_kad_server);
+        assert!(config.announce_private_addrs);
+        assert_eq!(config.relay_limits.max_reservations, 16);
+        assert_eq!(config.relay_limits.max_reservations_per_peer, 2);
+        assert_eq!(config.relay_limits.max_circuits, 8);
+        assert_eq!(config.relay_limits.max_circuits_per_peer, 2);
+        assert_eq!(config.relay_limits.max_circuit_bytes, 64 * 1024 * 1024);
+    }
+
+    #[test]
+    fn infrastructure_roles_helpers() {
+        assert_eq!(
+            InfrastructureRoles::kad_server(),
+            InfrastructureRoles {
+                kad_server: true,
+                relay_server: false
+            }
+        );
+        assert_eq!(
+            InfrastructureRoles::relay_server(),
+            InfrastructureRoles {
+                kad_server: false,
+                relay_server: true
+            }
+        );
+        assert_eq!(
+            InfrastructureRoles::kad_and_relay(),
+            InfrastructureRoles {
+                kad_server: true,
+                relay_server: true
+            }
+        );
     }
 }
